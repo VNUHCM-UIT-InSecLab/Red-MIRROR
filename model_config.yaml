@@ -1,0 +1,14 @@
+api_key: 
+llm_model: deepseek
+base_url: https://api.deepseek.com
+llm_model_name: deepseek-chat
+llm_model_name_reasoner: deepseek-reasoner
+embedding_models: maidalun1020/bce-embedding-base_v1
+embedding_type: local
+context_length: 32000
+embedding_url: ''
+rerank_model: maidalun1020/bce-reranker-base_v1
+temperature: 0.5
+history_len: 3
+timeout: 120
+proxies: {}

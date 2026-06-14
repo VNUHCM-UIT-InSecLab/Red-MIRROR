@@ -1,0 +1,20 @@
+log_verbose: true
+enable_rag: false
+enable_srmm: true
+enable_reflection: false
+enable_advance_tools: false
+mode: auto
+KB_ROOT_PATH: C:\Users\gulli\MIRROR\data\knowledge_base\VulnBotModel
+http_default_timeout: 300
+kali:
+  hostname: 192.168.229.128
+  port: 22
+  username: kali
+  password: kali
+default_bind_host: 0.0.0.0
+api_server:
+  host: localhost
+  port: 5000
+webui_server:
+  host: localhost
+  port: 8501

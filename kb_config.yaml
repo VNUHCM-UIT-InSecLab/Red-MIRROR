@@ -1,0 +1,32 @@
+default_vs_type: milvus
+milvus:
+  uri: https://in03-476ec1fab24a859.serverless.aws-eu-central-1.cloud.zilliz.com
+  user: db_476ec1fab24a859
+  password: 123cmnr123@
+kb_name: VulnBotModel
+chunk_size: 750
+overlap_size: 150
+top_n: 1
+top_k: 3
+score_threshold: 0.5
+search_params:
+  top_n: 10
+  score_threshold: 0.8
+  search_method: IVF_FLAT
+  index_params:
+    nlist: 1000
+    metric_type: COSINE
+index_params:
+  metric_type: COSINE
+  index_type: HNSW
+  params:
+    M: 16
+    efConstruction: 200
+text_splitter_dict:
+  SpacyTextSplitter:
+    source: huggingface
+    tokenizer_name_or_path: gpt2
+  RecursiveCharacterTextSplitter:
+    source: tiktoken
+    tokenizer_name_or_path: cl100k_base
+text_splitter_name: RecursiveCharacterTextSplitter
