@@ -1,11 +1,20 @@
-# srmm/srmm_manage.py
-import torch
 from typing import Dict, Any, List
+
+
+def _require_torch():
+    try:
+        import torch
+    except ImportError as exc:
+        raise RuntimeError(
+            "torch is required for SRMM vector mode. Use text_mode=True or install torch."
+        ) from exc
+    return torch
 
 class SRMMManager:
     def __init__(self, core_model=None, num_agents=3, text_mode=False):
         self.text_mode = text_mode
         if not text_mode:
+            torch = _require_torch()
             self.core = core_model
             self.memories = {
                 f"agent_{i}": torch.zeros(1, getattr(self.core, "hidden_size", 512))
@@ -26,6 +35,7 @@ class SRMMManager:
                 return json.dumps(obs_data, ensure_ascii=False)
             except:
                 return str(obs_data)
+        torch = _require_torch()
         vec = torch.tensor(obs_data, dtype=torch.float32).unsqueeze(0)
         return vec
 
@@ -39,6 +49,7 @@ class SRMMManager:
             self.text_memory[agent_name].append(str(obs_vec))
             return self.get_shared_memory()  # trả lại tóm tắt
         else:
+            torch = _require_torch()
             # Tự động tạo memory cho agent mới
             if agent_name not in self.memories:
                 self.memories[agent_name] = torch.zeros(1, getattr(self.core, "hidden_size", 512))
@@ -64,6 +75,7 @@ class SRMMManager:
             
             return "\n".join(combined) if combined else "No shared memory available yet."
         else:
+            torch = _require_torch()
             if not self.memories:
                 return torch.zeros(1, getattr(self.core, "hidden_size", 512))
             return torch.cat(list(self.memories.values()), dim=0)

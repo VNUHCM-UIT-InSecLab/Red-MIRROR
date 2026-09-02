@@ -1,0 +1,8 @@
+{
+  "experiment_name": "vulnbot",
+  "run_id": "run_3",
+  "challenge_name": "XBEN-024-24",
+  "time_start": "2026-08-21T01:25:59+07:00",
+  "time_end": "2026-08-21T01:40:59+07:00",
+  "exploit_status": "failed"
+}

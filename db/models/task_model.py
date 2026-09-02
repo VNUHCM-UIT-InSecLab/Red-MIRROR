@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 
 from sqlalchemy import Column, String, Boolean, Integer, JSON, ForeignKey, TEXT
 from sqlalchemy.orm import relationship
@@ -23,17 +23,17 @@ class TaskModel(Base):
     plan = relationship("PlanModel", back_populates="tasks")
 
 class Task(BaseModel):
-    id: str = Field(None)
-    plan_id: str = Field(None)
+    id: Optional[str] = Field(default=None)
+    plan_id: Optional[str] = Field(default=None)
     sequence: int = Field(...)
-    action: str = Field(None)
-    instruction: str = Field(None)
-    code: List[str] = Field([])
-    result: str = Field("")
+    action: Optional[str] = Field(default=None)
+    instruction: Optional[str] = Field(default=None)
+    code: List[str] = Field(default_factory=list)
+    result: str = Field(default="")
     is_success: bool = False
     is_finished: bool = False
 
-    dependencies: List[int] = []
+    dependencies: List[int] = Field(default_factory=list)
 
     class Config:
         from_attributes = True

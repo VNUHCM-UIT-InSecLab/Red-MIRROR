@@ -1,8 +1,7 @@
 from typing import Optional
 from pydantic import BaseModel, ConfigDict
 
-from actions.write_plan import WritePlan, parse_tasks, merge_tasks
-from utils.dataset_logger import DataLogger
+from actions.write_plan import WritePlan, parse_tasks, merge_tasks, get_first_task_instruction
 from db.models.task_model import Task
 from db.models.task_result import TaskResult
 from prompts.prompt import DeepPentestPrompt
@@ -14,6 +13,8 @@ from server.utils.utils import safe_parse_json
 from srmm.srmm_manage import SRMMManager
 import json
 from utils.log_common import RoleType
+import re
+import json
 
 logger = build_logger()
 
@@ -27,6 +28,36 @@ class Planner(BaseModel):
     use_reflection: bool = True
     role_name: str = RoleType.EXPLOITER.value
     flag_found: bool = False  # Track if flag was found during execution
+
+    def _extract_authoritative_base_url(self) -> str:
+        text = self.init_description or ""
+        match = re.search(r'https?://[^\s)>\]]+', text, re.IGNORECASE)
+        return match.group(0).rstrip('.,;') if match else ""
+
+    def _normalize_task_targets(self) -> None:
+        base_url = self._extract_authoritative_base_url()
+        if not base_url or not self.current_plan or not self.current_plan.tasks:
+            return
+
+        placeholder_patterns = [
+            r'https?://target\.local(?::\d+)?',
+            r'https?://target\b(?::\d+)?',
+            r'https?://localhost(?::\d+)?',
+            r'https?://127\.0\.0\.1(?::\d+)?',
+        ]
+
+        changed = 0
+        for task in self.current_plan.tasks:
+            instruction = task.instruction or ""
+            updated = instruction
+            for pattern in placeholder_patterns:
+                updated = re.sub(pattern, base_url, updated, flags=re.IGNORECASE)
+            if updated != instruction:
+                task.instruction = updated
+                changed += 1
+
+        if changed:
+            logger.info(f"[PLANNER] Normalized target URL in {changed} task(s) using init_description base URL: {base_url}")
 
     def plan(self):
         """
@@ -50,14 +81,9 @@ class Planner(BaseModel):
         response = WritePlan(plan_chat_id=self.current_plan.plan_chat_id, role_name=self.role_name).run(self.init_description, shared_summary)
         logger.info(f"plan: {response}")
 
-        # Log APPROVED plan for fine-tuning
-        try:
-            DataLogger().log_planner_io(shared_summary, self.init_description, response)
-        except Exception as e:
-            logger.warning(f"Failed to log dataset: {e}")
-
         try:
             self.current_plan = parse_tasks(response, self.current_plan)
+            self._normalize_task_targets()
             logger.info(f"[PLANNER] Parsed {len(self.current_plan.tasks)} tasks.")
         except Exception as e:
             logger.error(f"[PLANNER] Failed to parse plan: {e}")
@@ -86,11 +112,14 @@ class Planner(BaseModel):
         no_count = 0
         last_check_success_yes = None
         last_check_success_no = None
-        
-        for i in range(3):
+        check_success_rounds = 3 if Configs.basic_config.enable_reflection else 1
+
+        for i in range(check_success_rounds):
             check_response = _chat(
                 query=DeepPentestPrompt.check_success.format(result=result_text),
-                conversation_id=self.current_plan.react_chat_id
+                conversation_id=self.current_plan.react_chat_id,
+                summary=False,
+                use_history=False,
             )
             is_yes = "yes" in check_response.lower()
             
@@ -106,7 +135,7 @@ class Planner(BaseModel):
         else:
             check_success = last_check_success_no
         
-        logger.info(f"Check success: {check_success}")
+        logger.info(f"Check success ({check_success_rounds} round(s)): {check_success}")
 
         # Extract code from TaskResult for persistence
         code_to_save = task_result_obj.code if hasattr(task_result_obj, 'code') else []
@@ -133,15 +162,9 @@ class Planner(BaseModel):
         if any(indicator in result_lower for indicator in flag_indicators):
             logger.info(f"🎯 FLAG FOUND! Result contains flag. Terminating early.")
             import re
-            from datetime import datetime
             flag_match = re.search(r'FLAG\{[^}]*\}', result_text, re.IGNORECASE)
             if flag_match:
                 logger.info(f"🎯 FLAG EXTRACTED: {flag_match.group(0)}")
-                try:
-                    with open("found_flags.log", "a", encoding="utf-8") as f:
-                        f.write(f"[{datetime.now().isoformat()}] {flag_match.group(0)}\n")
-                except:
-                    pass
             else:
                 logger.info(f"FLAG detected but not cleanly extracted. Preview: {result_text[:1000]}")
             
@@ -179,32 +202,58 @@ class Planner(BaseModel):
         
         if self.role_name == RoleType.COLLECTOR.value:
             total_tasks = len(self.current_plan.tasks)
-            if total_tasks >=3:
+            if total_tasks >=4:
                 #logger.info(f"🛑 [COLLECTOR] Task limit reached ({total_tasks}/4). Stopping reconnaissance.")
                 return None
         
         # Bước 5: Cập nhật plan với Task object (contains code and result from TaskResult)
-        updated_response = (WritePlan(plan_chat_id=self.current_plan.plan_chat_id, role_name=self.role_name)
+        updated_response = (WritePlan(plan_chat_id=self.current_plan.react_chat_id, role_name=self.role_name)
                             .update(updated_task,  # Pass Task object with code and result populated
                                     self.current_plan.finished_success_tasks,
                                     self.current_plan.finished_fail_tasks,
                                     self.init_description, shared_summary))
         
         logger.info(f"updated_plan: {updated_response}")
-        
+
+        normalized_updated_response = (updated_response or "").strip() if isinstance(updated_response, str) else updated_response
+        if self.role_name == RoleType.COLLECTOR.value and normalized_updated_response in ("", "[]", "<json>[]</json>"):
+            logger.info("[PLANNER] Collector produced no follow-up tasks. Ending collector phase.")
+            return None
+
         if not updated_response:
             return None
 
+        immediate_next_task = get_first_task_instruction(updated_response)
         merge_tasks(updated_response, self.current_plan)
-        
+        self._normalize_task_targets()
+
+        if immediate_next_task:
+            matched_task = next(
+                (task for task in self.current_plan.tasks if task.instruction == immediate_next_task and not task.is_finished),
+                None
+            )
+            if matched_task is not None:
+                self.current_plan.current_task_sequence = matched_task.sequence
+            return immediate_next_task
+
         return self.next_task_details()
 
     def next_task_details(self):
         """
         Query next task details.
         """
-        next_task = self.current_plan.current_task.instruction
-        return next_task
+        current_task = self.current_plan.current_task
+        if current_task is None:
+            fallback_task = next((task for task in self.current_plan.tasks if not getattr(task, "is_finished", False)), None)
+            if fallback_task is None and self.current_plan.tasks:
+                fallback_task = self.current_plan.tasks[0]
+            if fallback_task is None:
+                logger.warning("[PLANNER] No available task found after parsing/merge.")
+                return None
+            current_task = fallback_task
+
+        self.current_plan.current_task_sequence = current_task.sequence
+        return current_task.instruction
 
     def update_task_status(self, plan_id: str, task_sequence: int,
                            is_finished: bool, is_success: bool, 

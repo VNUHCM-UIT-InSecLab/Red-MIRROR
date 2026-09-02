@@ -11,7 +11,6 @@ from config.pydantic_settings_file import BaseFileSettings
 
 PENTEST_ROOT = Path(os.environ.get("PENTEST_ROOT", ".")).resolve()
 
-
 class Mode(StrEnum):
     Auto = "auto"
     Manual = "manual"
@@ -25,6 +24,7 @@ class BasicConfig(BaseFileSettings):
     model_config = SettingsConfigDict(yaml_file=PENTEST_ROOT / "basic_config.yaml")
 
     log_verbose: bool = True
+    log_time_markers_only: bool = True
 
     enable_rag: bool = False
 
@@ -33,6 +33,7 @@ class BasicConfig(BaseFileSettings):
     enable_reflection: bool = False
 
     enable_advance_tools: bool = False  # Enable advanced recon tools (nmap, nuclei, etc.)
+    enable_playwright: bool = False  # Temporarily disable browser automation tools without removing code
 
     mode: str = Mode.Auto
 
@@ -41,8 +42,6 @@ class BasicConfig(BaseFileSettings):
 
         p = PENTEST_ROOT / "logs"
         return p
-
-    KB_ROOT_PATH: str = str(PENTEST_ROOT / "data/knowledge_base/VulnBotModel")
 
     http_default_timeout: int = 300
 
@@ -59,14 +58,6 @@ class BasicConfig(BaseFileSettings):
 
     webui_server: dict = {"host": default_bind_host, "port": 8501}
 
-    def make_dirs(self):
-        for p in [
-            self.LOG_PATH,
-        ]:
-            p.mkdir(parents=True, exist_ok=True)
-        Path(self.KB_ROOT_PATH).mkdir(parents=True, exist_ok=True)
-
-
 class DBConfig(BaseFileSettings):
     model_config = SettingsConfigDict(yaml_file=PENTEST_ROOT / "db_config.yaml")
     mysql: dict = {
@@ -78,67 +69,36 @@ class DBConfig(BaseFileSettings):
     }
 
 
-class KBConfig(BaseFileSettings):
-    model_config = SettingsConfigDict(yaml_file=PENTEST_ROOT / "kb_config.yaml")
-
-    default_vs_type: str = "milvus"
-
-    milvus: dict = {
-        "uri": "",
-        "user": "",
-        "password": "",
-    }
-
-    kb_name: str = ""
-
-    chunk_size: int = 750
-    overlap_size: int = 150
-    top_n: int = 1
-    top_k: int = 3
-    score_threshold: float = 0.5
-    search_params: dict = {
-        "metric_type": "L2",
-        "params": {
-            "nprobe": 10
-        }
-    }
-    index_params: dict = {
-        "metric_type": "L2",
-        "index_type": "HNSW",
-        "params": {
-            "M": 16,
-            "efConstruction": 200
-        }
-    }
-
-    text_splitter_dict: dict[str, dict[str, Any]] = {
-        "SpacyTextSplitter": {
-            "source": "huggingface",
-            "tokenizer_name_or_path": "gpt2",
-        },
-        "RecursiveCharacterTextSplitter": {
-            "source": "tiktoken",
-            "tokenizer_name_or_path": "cl100k_base",
-        }
-    }
-
-    text_splitter_name: str = "RecursiveCharacterTextSplitter"
-
-
 class LLMConfig(BaseFileSettings):
     model_config = SettingsConfigDict(yaml_file=PENTEST_ROOT / "model_config.yaml")
 
     api_key: str = ""
+    api_key_embedding: str = ""
     llm_model: str = "openai"
     base_url: str = ""
     llm_model_name: str = ""
-    llm_model_name_reasoner: str = ""  # DeepSeek Reasoner for planning tasks
     embedding_models: str = "maidalun1020/bce-embedding-base_v1"
     embedding_type: str = "local"
     context_length: int = 120000
+    max_tokens: int = 12000
     embedding_url: str = ""
+    rag_web_search_provider: str = "tavily"
+    rag_web_search_api_key: str = ""
+    rag_web_search_endpoint: str = ""
+    rag_web_search_search_depth: str = "basic"
+    rag_web_search_max_results: int = 3
+    rag_web_search_max_snippets: int = 2
+    rag_web_search_include_raw_content: bool = False
+    rag_web_search_timeout: int = 20
+    rag_web_search_decision_layer: bool = True
+    rag_web_search_max_queries_per_decision: int = 1
+    rag_web_search_max_calls_per_challenge: int = 3
+    rag_web_search_cache_enabled: bool = True
+    rag_web_search_dedup_enabled: bool = True
+    rag_web_search_cache_ttl_hours: int = 168
     rerank_model: str = "maidalun1020/bce-reranker-base_v1"
     temperature: float = 0.5
+    top_p: float = 1.0
     history_len: int = 5
     timeout: int = 600
     proxies: Dict[str, str] = dataclasses.field(default_factory=dict)
@@ -148,19 +108,16 @@ class ConfigsContainer:
     PENTEST_ROOT = PENTEST_ROOT
 
     basic_config: BasicConfig = settings_property(BasicConfig())
-    kb_config: KBConfig = settings_property(KBConfig())
     llm_config: LLMConfig = settings_property(LLMConfig())
     db_config: DBConfig = settings_property(DBConfig())
 
     def create_all_templates(self):
         self.basic_config.create_template_file(write_file=True, file_format="yaml")
-        self.kb_config.create_template_file(write_file=True, file_format="yaml")
         self.llm_config.create_template_file(write_file=True, file_format="yaml")
         self.db_config.create_template_file(write_file=True, file_format="yaml")
 
     def set_auto_reload(self, flag: bool = True):
         self.basic_config.auto_reload = flag
-        self.kb_config.auto_reload = flag
         self.llm_config.auto_reload = flag
         self.db_config.auto_reload = flag
 

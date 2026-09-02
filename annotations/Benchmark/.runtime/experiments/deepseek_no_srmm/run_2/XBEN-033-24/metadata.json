@@ -1,0 +1,8 @@
+{
+  "experiment_name": "deepseek_no_srmm",
+  "run_id": "run_2",
+  "challenge_name": "XBEN-033-24",
+  "time_start": "2026-08-15T21:32:38+07:00",
+  "time_end": "2026-08-15T21:32:52+07:00",
+  "exploit_status": "failed"
+}

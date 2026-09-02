@@ -13,47 +13,114 @@ from utils.log_common import RoleType
 from utils.log_common import build_logger
 
 logger = build_logger()
+
+
+def extract_json_payload(text: str) -> str:
+    if not text:
+        return text
+
+    s = text.strip()
+
+    # Preferred explicit wrappers
+    start_tag = "<json>"
+    end_tag = "</json>"
+    if start_tag in s and end_tag in s:
+        start = s.find(start_tag) + len(start_tag)
+        end = s.rfind(end_tag)
+        return s[start:end].strip()
+
+    # Common markdown fences
+    if "```json" in s:
+        start = s.find("```json") + len("```json")
+        end = s.find("```", start)
+        if end != -1:
+            return s[start:end].strip()
+    if "```" in s:
+        start = s.find("```") + len("```")
+        end = s.find("```", start)
+        if end != -1:
+            fenced = s[start:end].strip()
+            if fenced.startswith("[") or fenced.startswith("{"):
+                return fenced
+
+    # Fallback: find first balanced JSON array/object in prose
+    start_idx = -1
+    opener = ""
+    for i, ch in enumerate(s):
+        if ch in "[{":
+            start_idx = i
+            opener = ch
+            break
+    if start_idx == -1:
+        return s
+
+    closer = "]" if opener == "[" else "}"
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start_idx, len(s)):
+        ch = s[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == opener:
+            depth += 1
+        elif ch == closer:
+            depth -= 1
+            if depth == 0:
+                return s[start_idx:i + 1].strip()
+
+    return s[start_idx:].strip()
+
 class WritePlan(BaseModel):
     plan_chat_id: str
     role_name: str = RoleType.EXPLOITER.value
 
+    def _extract_json_block(self, rsp: str) -> str:
+        return extract_json_payload(rsp)
+
     def run(self, init_description, shared_summary) -> str:
         prompt = DeepPentestPrompt.write_plan_exploiter
-        use_reasoner = False  # Reasoner disabled for faster planning
-        
+
         if self.role_name == RoleType.COLLECTOR.value:
              prompt = DeepPentestPrompt.write_plan_collector
-        
+
+        formatted_prompt = prompt.format(shared_summary=shared_summary, init_description=init_description)
+
+        plan_max_tokens = 256
+
         rsp = _chat(
-            query=prompt.format(shared_summary=shared_summary, init_description=init_description), 
-            conversation_id=self.plan_chat_id, 
-            kb_name=Configs.kb_config.kb_name, 
+            query=formatted_prompt,
+            conversation_id=self.plan_chat_id,
             kb_query=init_description,
-            use_reasoner=use_reasoner
+            summary=False,
+            use_history=True,
+            max_tokens_override=plan_max_tokens,
         )
         if isinstance(rsp, tuple):
             rsp = rsp[0]
+        return self._extract_json_block(rsp)
 
-        match = re.search(r'<json>(.*?)</json>', rsp, re.DOTALL)
-        if match:
-            code = match.group(1)
-            return code
-        else:
-            # Fallback: return raw response and let parse_tasks handle it
-            return rsp
-
-    def update(self, completed_task: Task, success_task: List[str], fail_task: List[str], 
+    def update(self, completed_task: Task, success_task: List[str], fail_task: List[str],
                init_description: str, shared_summary: str) -> Optional[str]:
         """
         Update the plan based on a completed task.
-        
+
         Args:
             completed_task: Task object (from DB) with instruction, code, result populated
             success_task: List of successful task instructions
             fail_task: List of failed task instructions
             init_description: Initial task description
             shared_summary: Summary from shared memory
-        
+
         Returns:
             JSON string containing updated plan, or empty string if no update needed
         """
@@ -61,15 +128,13 @@ class WritePlan(BaseModel):
         formatted_code = "\n".join(completed_task.code) if isinstance(completed_task.code, list) else str(completed_task.code)
         formatted_success_tasks = "\n".join(f"- {t}" for t in success_task) if success_task else "None"
         formatted_fail_tasks = "\n".join(f"- {t}" for t in fail_task) if fail_task else "None"
-        
+
         # Choose prompt based on role
-        use_reasoner = False  # Reasoner disabled for faster planning
-        
         if self.role_name == RoleType.COLLECTOR.value:
             prompt = DeepPentestPrompt.update_plan_collector
         else:
             prompt = DeepPentestPrompt.update_plan
-        
+
         query = prompt.format(
             current_task=completed_task.instruction,
             init_description=init_description,
@@ -79,63 +144,50 @@ class WritePlan(BaseModel):
             success_task=formatted_success_tasks,
             fail_task=formatted_fail_tasks
         )
-        
-        
-        # Generate plan (consistency check removed for performance)
+
+        update_max_tokens = 256
+
         rsp = _chat(
             query=query,
             conversation_id=self.plan_chat_id,
-            kb_name=Configs.kb_config.kb_name,
             kb_query=completed_task.instruction,
-            use_reasoner=use_reasoner
+            summary=False,
+            use_history=True,
+            max_tokens_override=update_max_tokens,
         )
         if isinstance(rsp, tuple):
             rsp = rsp[0]
         if rsp == "":
             return rsp
-
-        match = re.search(r'<json>(.*?)</json>', rsp, re.DOTALL)
-        if match:
-            return match.group(1)
-        else:
-            return rsp
+        return self._extract_json_block(rsp)
 
 
 def parse_tasks(response: str, current_plan: Plan):
     # Handle None or empty response
     if not response:
         raise ValueError("parse_tasks received empty or None response from LLM. The plan generation failed.")
-    
+
     # Strip and clean the response
     processed_response = response.strip()
-    
-    # Remove <json> tags if present
-    if processed_response.startswith('<json>'):
-        processed_response = processed_response[6:]
-    if processed_response.endswith('</json>'):
-        processed_response = processed_response[:-7]
-    
-    # Remove ```json code blocks if present
-    if processed_response.startswith('```json'):
-        processed_response = processed_response[7:]
-    if processed_response.startswith('```'):
-        processed_response = processed_response[3:]
-    if processed_response.endswith('```'):
-        processed_response = processed_response[:-3]
-    
-    processed_response = processed_response.strip()
-    
+
+    processed_response = extract_json_payload(processed_response)
+
     # Preprocess to handle escape sequences
     processed_response = preprocess_json_string(processed_response)
-    
+
     # Validate we have something to parse
     if not processed_response:
         raise ValueError("parse_tasks: After cleaning, response is empty. Cannot parse tasks.")
-    
+
     try:
         parsed_response = json.loads(processed_response)
     except json.JSONDecodeError as e:
         raise ValueError(f"parse_tasks: Failed to parse JSON. Error: {e}. Response preview: {processed_response[:200]}...")
+
+    if isinstance(parsed_response, dict):
+        parsed_response = [parsed_response]
+    elif not isinstance(parsed_response, list):
+        raise ValueError(f"parse_tasks: Expected JSON list or object, got {type(parsed_response).__name__}.")
 
     tasks = import_tasks_from_json(current_plan.id, parsed_response)
 
@@ -143,94 +195,167 @@ def parse_tasks(response: str, current_plan: Plan):
 
     return current_plan
 
-def preprocess_json_string(json_str):
+def preprocess_json_string(json_str: str) -> str:
     """
-    Enhanced JSON preprocessing to handle malformed strings with unescaped quotes,
-    wildcards, and special characters in instruction fields.
+    Robust JSON preprocessing using a character-by-character state machine.
+
+    Handles:
+    - Unescaped double/single quotes inside string values
+    - Unterminated JSON strings (LLM output cut off mid-string)
+    - Invalid escape sequences (\\@, \\!)
+    - Truncated JSON arrays/objects (missing closing brackets)
+
+    Falls back to the original string if the repair itself produces
+    something unparseable and worse than the original.
     """
-    # Fix invalid escape sequences
-    json_str = re.sub(r'\\([@!])', r'\\\\\1', json_str)
-    
-    # Strategy: Use a robust approach to fix unterminated strings
-    # Look for instruction fields and ensure proper escaping
-    
+    # Fix obviously invalid escape sequences first (e.g. \@ \!)
+    json_str = re.sub(r'\\([@!])', lambda m: '\\\\' + m.group(1), json_str)
+
+    # Fast path: already valid
     try:
-        # First attempt: try to parse as-is
         json.loads(json_str)
         return json_str
-    except json.JSONDecodeError as e:
-        # If parsing fails, attempt to fix common issues
-        error_msg = str(e)
-        
-        if "Unterminated string" in error_msg:
-            # Pattern to match instruction fields with potentially problematic content
-            # This will match: "instruction": "content..."
-            pattern = r'("instruction"\s*:\s*")([^"]*(?:[^\\"]|\\.)*)(")'
-            
-            def fix_quotes(match):
-                prefix = match.group(1)  # "instruction": "
-                content = match.group(2)  # the content
-                suffix = match.group(3)   # closing "
-                
-                # Check if content has unescaped quotes
-                # Replace unescaped quotes (but not already escaped ones)
-                fixed_content = content
-                
-                # Temporarily replace escaped quotes with placeholder
-                fixed_content = fixed_content.replace('\\"', '\x00ESCAPED\x00')
-                # Escape any remaining quotes
-                fixed_content = fixed_content.replace('"', '\\"')
-                # Restore the placeholders
-                fixed_content = fixed_content.replace('\x00ESCAPED\x00', '\\"')
-                
-                return f'{prefix}{fixed_content}{suffix}'
-            
-            # Apply the fix
-            json_str = re.sub(pattern, fix_quotes, json_str, flags=re.DOTALL)
-            
-            # Try parsing again
-            try:
-                json.loads(json_str)
-                return json_str
-            except json.JSONDecodeError:
-                # If still failing, return original (will fail with better error message)
-                pass
-        
-        # If all else fails, return the original
+    except json.JSONDecodeError:
+        pass
+
+    # ------------------------------------------------------------------ #
+    # Character-by-character repair                                        #
+    # ------------------------------------------------------------------ #
+    out: list[str] = []
+    i = 0
+    n = len(json_str)
+
+    # Track open braces/brackets so we can close them at the end
+    depth_stack: list[str] = []  # '[' or '{'
+
+    in_string = False
+    escape_next = False
+
+    while i < n:
+        ch = json_str[i]
+
+        if escape_next:
+            out.append(ch)
+            escape_next = False
+            i += 1
+            continue
+
+        if in_string:
+            if ch == '\\':
+                # Peek ahead: is the next char a valid JSON escape?
+                next_ch = json_str[i + 1] if i + 1 < n else ''
+                valid_escapes = set('"\\bfnrtu/')
+                if next_ch in valid_escapes:
+                    out.append(ch)
+                    escape_next = True
+                else:
+                    # Invalid escape — double the backslash
+                    out.append('\\\\')
+                i += 1
+                continue
+
+            if ch == '"':
+                # This closes the current string
+                in_string = False
+                out.append(ch)
+                i += 1
+                continue
+
+            if ch == '\n' or ch == '\r':
+                # Bare newline inside a JSON string — escape it
+                out.append('\\n' if ch == '\n' else '\\r')
+                i += 1
+                continue
+
+            # Ordinary character inside a string
+            out.append(ch)
+            i += 1
+            continue
+
+        # ---- Outside a string ----
+        if ch == '"':
+            in_string = True
+            out.append(ch)
+            i += 1
+            continue
+
+        if ch in ('{', '['):
+            depth_stack.append(ch)
+            out.append(ch)
+            i += 1
+            continue
+
+        if ch in ('}', ']'):
+            if depth_stack:
+                depth_stack.pop()
+            out.append(ch)
+            i += 1
+            continue
+
+        out.append(ch)
+        i += 1
+
+    # If we ended while still inside a string, close it
+    if in_string:
+        out.append('"')
+
+    # Close any unclosed brackets/braces
+    closing = {'{': '}', '[': ']'}
+    for opener in reversed(depth_stack):
+        out.append(closing[opener])
+
+    repaired = ''.join(out)
+
+    try:
+        json.loads(repaired)
+        return repaired
+    except json.JSONDecodeError:
+        # Repair made things worse; return original so the caller gets
+        # the original error message
         return json_str
-    
-    return json_str
 
 def merge_tasks(response: str, current_plan: Plan):
     # Strip common JSON wrapper tags that LLMs add
     processed_response = response.strip()
-    
-    # Remove <json> tags
-    if processed_response.startswith('<json>'):
-        processed_response = processed_response[6:]
-    if processed_response.endswith('</json>'):
-        processed_response = processed_response[:-7]
-    
-    # Remove ```json code blocks
-    if processed_response.startswith('```json'):
-        processed_response = processed_response[7:]
-    if processed_response.startswith('```'):
-        processed_response = processed_response[3:]
-    if processed_response.endswith('```'):
-        processed_response = processed_response[:-3]
-    
-    processed_response = processed_response.strip()
-    
+
+    processed_response = extract_json_payload(processed_response)
+
     # Preprocess the input JSON string
     processed_response = preprocess_json_string(processed_response)
 
     response = json.loads(processed_response)
+    if isinstance(response, dict):
+        response = [response]
+    elif not isinstance(response, list):
+        raise ValueError(f"merge_tasks: Expected JSON list or object, got {type(response).__name__}.")
 
     tasks = merge_tasks_from_json(current_plan.id, response, current_plan.tasks)
 
     current_plan.tasks = tasks
 
     return current_plan
+
+
+def get_first_task_instruction(response: str) -> Optional[str]:
+    if not response:
+        return None
+
+    processed_response = extract_json_payload(response.strip())
+    processed_response = preprocess_json_string(processed_response)
+    if not processed_response:
+        return None
+
+    parsed_response = json.loads(processed_response)
+    if isinstance(parsed_response, dict):
+        parsed_response = [parsed_response]
+    if not isinstance(parsed_response, list) or not parsed_response:
+        return None
+
+    first_task = _normalize_task_schema(parsed_response[0])
+    instruction = first_task.get("instruction")
+    if not instruction:
+        return None
+    return normalize_phase_tags(instruction)
 
 
 def normalize_phase_tags(instruction: str) -> str:
@@ -247,16 +372,40 @@ def normalize_phase_tags(instruction: str) -> str:
     instruction = re.sub(r'^\[Exploit.*?\]', '[Exploitation]', instruction, flags=re.IGNORECASE)
     return instruction
 
+def _normalize_task_schema(task_data: Dict) -> Dict:
+    """
+    Accept slight schema drift from the planner without crashing the run.
+    Canonical schema:
+      - id
+      - dependent_task_ids
+      - instruction
+      - action
+    """
+    normalized = dict(task_data or {})
+
+    if 'instruction' not in normalized and 'task' in normalized:
+        normalized['instruction'] = normalized['task']
+
+    if 'dependent_task_ids' not in normalized or normalized['dependent_task_ids'] is None:
+        normalized['dependent_task_ids'] = []
+
+    if 'action' not in normalized or not normalized['action']:
+        tool_name = str(normalized.get('tool', '') or '').lower()
+        normalized['action'] = 'Shell' if 'cmdexec' in tool_name or 'shell' in tool_name else 'Web'
+
+    return normalized
+
 def import_tasks_from_json(plan_id: str, tasks_json: List[Dict]) -> List[TaskModel]:
     tasks = []
-    for idx, task_data in enumerate(tasks_json):
+    normalized_tasks = [_normalize_task_schema(task_data) for task_data in tasks_json]
+    for idx, task_data in enumerate(normalized_tasks):
         instruction = normalize_phase_tags(task_data['instruction'])
         task = Task(
             plan_id=plan_id,
             sequence=idx,
             action=task_data['action'],
             instruction=instruction,
-            dependencies=[i for i, t in enumerate(tasks_json)
+            dependencies=[i for i, t in enumerate(normalized_tasks)
                           if t['id'] in task_data['dependent_task_ids']]
         )
 
@@ -265,7 +414,7 @@ def import_tasks_from_json(plan_id: str, tasks_json: List[Dict]) -> List[TaskMod
 
 
 def merge_tasks_from_json(plan_id: str, new_tasks_json: List[Dict], old_tasks: List[Task]) -> List[Task]:
-    # 获取所有已完成且成功的任务
+    normalized_new_tasks = [_normalize_task_schema(task_data) for task_data in new_tasks_json]
     completed_tasks_map = {
         task.instruction: task
         for task in old_tasks
@@ -276,8 +425,7 @@ def merge_tasks_from_json(plan_id: str, new_tasks_json: List[Dict], old_tasks: L
 
     for instruction, completed_task in completed_tasks_map.items():
         found = False
-        for task_data in new_tasks_json:
-            # Normalize for comparison logic
+        for task_data in normalized_new_tasks:
             norm_instruction = normalize_phase_tags(task_data['instruction'])
             if norm_instruction == instruction:
                 found = True
@@ -289,9 +437,9 @@ def merge_tasks_from_json(plan_id: str, new_tasks_json: List[Dict], old_tasks: L
 
     new_task_id_to_idx = {
         task_data.get('id'): idx+len(merged_tasks)
-        for idx, task_data in enumerate(new_tasks_json)
+        for idx, task_data in enumerate(normalized_new_tasks)
     }
-    for idx, task_data in enumerate(new_tasks_json):
+    for idx, task_data in enumerate(normalized_new_tasks):
         instruction = normalize_phase_tags(task_data['instruction'])
         sequence = len(merged_tasks)
 

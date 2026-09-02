@@ -1,7 +1,9 @@
 import logging
 import os
+import sys
 import time
 from enum import Enum
+from datetime import datetime
 
 import loguru
 import loguru._logger
@@ -25,6 +27,21 @@ def _filter_logs(record: dict) -> bool:
     return True
 
 
+def wall_clock_stamp() -> str:
+    return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+def resolve_log_file_path(log_file: str) -> str:
+    override = os.environ.get("PENTEST_LOG_FILE", "").strip()
+    if override:
+        return override
+    if not log_file.endswith(".log"):
+        log_file = f"{log_file}.log"
+    if not os.path.isabs(log_file):
+        log_file = str((Configs.basic_config.LOG_PATH / log_file).resolve())
+    return log_file
+
+
 # 默认每调用一次 build_logger 就会添加一次 hanlder，
 @cached(max_size=100, algorithm=CachingAlgorithmFlag.LRU)
 def build_logger(log_file: str = "Auto-Pentest"):
@@ -37,17 +54,28 @@ def build_logger(log_file: str = "Auto-Pentest"):
     user can set basic_settings.log_verbose=True to output debug logs
     use logger.exception to log errors with exceptions
     """
-    loguru.logger._core.handlers[0]._filter = _filter_logs
     logger = loguru.logger
     logger.warn = logger.warning
-    # logger.error = partial(logger.exception)
+    logger.remove()
 
-    if log_file:
-        if not log_file.endswith(".log"):
-            log_file = f"{log_file}.log"
-        if not os.path.isabs(log_file):
-            log_file = str((Configs.basic_config.LOG_PATH / log_file).resolve())
-        logger.add(log_file, colorize=False, filter=_filter_logs)
+    console_format = "<level>{level}</level> | {message}"
+    file_format = "{level} | {message}"
+    if not Configs.basic_config.log_time_markers_only:
+        console_format = "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level}</level> | {message}"
+        file_format = "{time:YYYY-MM-DD HH:mm:ss} | {level} | {message}"
+
+    logger.add(
+        sys.stderr,
+        colorize=True,
+        filter=_filter_logs,
+        format=console_format,
+    )
+
+    # File logging is opt-in. Benchmark runs capture console output directly in
+    # each challenge's Autopentest.log and must not recreate the global logs/ tree.
+    file_override = os.environ.get("PENTEST_LOG_FILE", "").strip()
+    if file_override and log_file and os.environ.get("PENTEST_DISABLE_FILE_LOG", "").strip() != "1":
+        logger.add(resolve_log_file_path(log_file), colorize=False, filter=_filter_logs, format=file_format)
 
     return logger
 

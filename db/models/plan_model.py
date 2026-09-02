@@ -27,6 +27,8 @@ class Plan(BaseModel):
     plan_chat_id: str = Field(None)
     react_chat_id: str = Field(None)
     tasks: List[Task] = []
+    collector_executed_count: int = Field(0)
+    hypothesis_state: Dict[str, Dict] = Field(default_factory=dict)
 
     class Config:
         from_attributes = True

@@ -1,0 +1,20 @@
+log_verbose: true
+log_time_markers_only: true
+enable_rag: true
+enable_srmm: false
+enable_reflection: true
+enable_advance_tools: false
+mode: auto
+http_default_timeout: 300
+kali:
+  hostname: 127.0.0.1
+  port: 22
+  username: YOUR_SSH_USERNAME
+  password: YOUR_SSH_PASSWORD
+default_bind_host: 0.0.0.0
+api_server:
+  host: localhost
+  port: 5000
+webui_server:
+  host: localhost
+  port: 8501

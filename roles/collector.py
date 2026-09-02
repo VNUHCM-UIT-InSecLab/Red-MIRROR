@@ -4,13 +4,11 @@ from prompts.prompt import DeepPentestPrompt
 from roles.role import Role
 from utils.log_common import RoleType
 from srmm.srmm_manage import SRMMManager
-from srmm.srmm_core import SRMMCore
 from server.chat.chat import _call_tool, _chat
 from server.chat.reflection import intra_reflection
 from config.config import Configs
 from roles.exploiter import Exploiter
 from utils.log_common import build_logger
-from actions.task_to_query import task_to_query
 logger = build_logger()
 from tools.web_recon_tool import tools_description
 class Collector(Role):
@@ -45,8 +43,6 @@ class Collector(Role):
         Use Validator-Driven Agent Flow for reconnaissance.
         Passes SHORT query + role_guidance + context to _call_tool_with_reflection.
         """
-        target = self.FindTargetURL(next_task)
-
         # Build context from shared memory (if enabled)
         context = ""
         if Configs.basic_config.enable_srmm and getattr(self, "srmm", None) is not None:
@@ -62,7 +58,7 @@ class Collector(Role):
             except Exception as e:
                 logger.warning(f"[SRMM] Collector SRMM get_shared_memory failed: {e}")
         
-        query = task_to_query(current_task=next_task, tools_description=tools_description)
+        query = next_task
         logger.info(f"[Collector] Query: {query}")
 
         remaining_reflections = 3
@@ -72,9 +68,10 @@ class Collector(Role):
         while True:
             task_result, analyzer_result = await _call_tool(
                 query=query,
-                target=target,
+                conversation_id=self.planner.current_plan.react_chat_id,
                 llm_model=self.llm,
                 type="collector",
+                use_history=False,
             )
 
             if not Configs.basic_config.enable_reflection:

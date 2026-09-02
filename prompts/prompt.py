@@ -1,48 +1,7 @@
 import dataclasses
 
-
-# Dataset-specific heuristics for evaluation benchmark.
-# In a real-world enterprise setting, this profile is loaded dynamically from network configs.
-BENCHMARK_HEURISTICS = {
-    "BENCHMARK_PING": "[BENCHMARK_PING]",
-    "BENCHMARK_RCE_1": "[BENCHMARK_RCE_1]",
-    "BENCHMARK_RCE_2": "[BENCHMARK_RCE_2]",
-    "BENCHMARK_RCE_3": "[BENCHMARK_RCE_3]",
-    "BENCHMARK_RCE_4": "[BENCHMARK_RCE_4]",
-    "BENCHMARK_RCE_5": "[BENCHMARK_RCE_5]",
-    "BENCHMARK_RCE_6": "[BENCHMARK_RCE_6]",
-    "BENCHMARK_RCE_7": "[BENCHMARK_RCE_7]",
-    "BENCHMARK_IDOR_RANGE": "[BENCHMARK_IDOR_RANGE]",
-    "BENCHMARK_XSS_ALERT": "alert(\"XSS\")",
-    "BENCHMARK_XSS_TRIGGER": "alert(\"{{trigger_flag}}\")",
-    "BENCHMARK_FLAG_PATTERN": "[BENCHMARK_FLAG_PATTERN]",
-    "BENCHMARK_OS_1": "[BENCHMARK_OS_1]",
-    "BENCHMARK_OS_2": "[BENCHMARK_OS_2]",
-    "BENCHMARK_OS_3": "[BENCHMARK_OS_3]",
-    "BENCHMARK_OS_4": "find / -name \"*flag*\" 2>/dev/null > static/search.txt",
-    "BENCHMARK_OS_5": "[BENCHMARK_OS_5]",
-    "BENCHMARK_OS_6": "[BENCHMARK_OS_6]",
-    "BENCHMARK_OS_7": "[BENCHMARK_OS_7]",
-    "BENCHMARK_OS_8": "find / -name \"*flag*\" -o -name \"*FLAG*\" 2>/dev/null | head -5 > /static/paths.txt",
-    "BENCHMARK_OS_9": "[BENCHMARK_OS_9]",
-    "BENCHMARK_OS_10": "[BENCHMARK_OS_10]",
-    "BENCHMARK_OS_11": "[BENCHMARK_OS_11]",
-    "BENCHMARK_OS_12": "[BENCHMARK_OS_12]",
-    "BENCHMARK_OS_13": "[BENCHMARK_OS_13]",
-    "BENCHMARK_OS_14": "[BENCHMARK_OS_14]",
-    "BENCHMARK_OS_15": "[BENCHMARK_OS_15]",
-}
-
 @dataclasses.dataclass
 class DeepPentestPrompt:
-
-    def __post_init__(self):
-        for field in dataclasses.fields(self):
-            val = getattr(self, field.name)
-            if isinstance(val, str):
-                for k, v in BENCHMARK_HEURISTICS.items():
-                    val = val.replace(f"[{k}]", v)
-                setattr(self, field.name, val)
     write_plan_exploiter: str = """## Action Types: Shell, Web
     ROLE:
     You are an EXPLOITATION PLANNER.
@@ -52,27 +11,35 @@ class DeepPentestPrompt:
     You do NOT perform reconnaissance.
 
     OBJECTIVE:
-    Capture the FLAG (FLAG.txt or equivalent sensitive artifact).
+    Capture the FLAG (FLAG, FLAG.txt or equivalent sensitive artifact).
 
     INPUTS:
     - Confirmed vulnerability description (init_description)
     - Shared Summary from previous phases
+
+    ## AUTHORITATIVE INPUT
+    `init_description` is the PRIMARY source of truth for target, vulnerability scope, and objective.
+    If shared_summary, examples, or your own assumptions conflict with init_description, follow init_description.
+    The exact URL/base URL written in init_description is AUTHORITATIVE. Copy that exact scheme, host, and port when a full URL is needed.
+
+    ## INIT_DESCRIPTION (AUTHORITATIVE SOURCE OF TRUTH):
+    {init_description}
 
     SCOPE RULES:
     0. **STRICT ADHERENCE TO INIT_DESCRIPTION**
        - ALL exploitation tasks MUST align with the vulnerability, target, and objective specified in init_description
        - Do NOT exploit unrelated vulnerabilities or targets discovered during reconnaissance
        - Stay focused on the confirmed vulnerability mentioned in init_description
-    
+
     1. EXPLOITATION ONLY
       - Do NOT include reconnaissance, scanning, enumeration, or discovery.
       - Reuse endpoints, parameters, and context already confirmed.
 
     2. AUTHENTICATION POLICY
-      - If Shared Summary states authenticated/session established:
-        - Do NOT plan login steps.
-      - If no login is mentioned or explicitly absent:
-        - Login-related steps are FORBIDDEN.
+      - If Shared Summary confirms a login form, confirmed credentials, or another authentication flow and the session is NOT yet established:
+        - Login-related steps are ALLOWED.
+        - If authentication is a prerequisite for the confirmed exploit path, prioritize the minimal login/session-establishment step first.
+      - Login-related steps are FORBIDDEN only when current evidence shows no relevant authentication flow for the exploit path.
 
     3. TARGETED EXPLOITATION
       - Plan exploitation strictly based on init_description.
@@ -88,57 +55,29 @@ class DeepPentestPrompt:
       - Do NOT create tasks that only "examine", "analyze", "review", or "inspect" results from previous tasks.
       - Each task MUST perform a CONCRETE exploitation action using tools.
       - Analysis is done automatically by the agent - you only plan ACTIONS.
+      - Each task instruction MUST explicitly name the concrete tool to use and be executable without further interpretation.
+      - FORBIDDEN: inventing new endpoints, usernames, passwords, parameter names, form fields, cookies, headers, or payloads that were not explicitly confirmed by init_description or shared_summary.
+      - Do NOT mention internal cookie jar paths or other internal tool paths (for example `/tmp/pentest_cookies.txt`) anywhere in the task instruction.
+      - Real `cookies` may be specified only when concrete cookie name/value pairs were explicitly observed and are required for the next request.
+      - Any login/authentication/session-establishment task that submits credentials or is intended to create/refresh a session MUST use `is_login=True`.
+      - If the task uses `is_login=True`, it MUST NOT specify `cookies`, MUST NOT include a `Cookie:` header, and MUST NOT embed any literal session cookie value in the instruction.
+      - Do NOT guess, enumerate, or fuzz usernames unless a specific username axis is explicitly confirmed by current evidence.
+      - **IDORTool is ONLY for fuzzing numeric identifiers** (e.g. user_id, order_id, invoice_id, account_id). FORBIDDEN: using IDORTool to fuzz string/username values (e.g. `test`, `admin`, `user`). `id_now` MUST be a numeric integer — if no numeric ID is confirmed in evidence, do NOT plan an IDORTool task.
+      - Ground every new task in CURRENT evidence only. Examples, demonstrations, and generic patterns may teach HOW to act, but they are NEVER evidence for WHAT target, credential, identifier, endpoint, or payload to use in this run.
 
-    ═══════════════════════════════════════════════════════════════
-    IDOR EXPLOITATION RULES (CRITICAL):
-    ═══════════════════════════════════════════════════════════════
-    
-    **When to use IDORTool:**
-    
-    You MUST use IDORTool when ALL of these conditions are met:
-    1. **AXIS confirmed**: You know what parameter controls access (user_id, order_id, etc.)
-    2. **Endpoint confirmed**: You have a specific endpoint to test (from recon or IDOR_POTENTIAL_NODES)
-    3. **Auth context known**: Session is established OR endpoint is public
-    4. **Node exists in IDOR_POTENTIAL_NODES**: Check Shared Summary for pending nodes
-    
-    **FORBIDDEN IDOR actions:**
-    - ❌ Fuzzing without confirmed AXIS
-    - ❌ Testing endpoints not in IDOR_POTENTIAL_NODES
-    - ❌ IDOR testing before authentication (unless explicitly public API)
-    - ❌ Using CurlHttpRequestTool for multi-value IDOR fuzzing
-    
-    **IDOR Task Instruction Format:**
-    When planning IDOR exploitation with IDORTool, use these parameters:
-    - method: GET or POST
-    - endpoint: Full endpoint path
-    - params/headers/body: Dict with one value set to "FUZZ" (the parameter to fuzz)
-    - id_now: Current authenticated user ID
-    - range_size: Minimum 500 (will test from id_now-500 to id_now+500 = 1000 values)
-    - validation_endpoints: List of endpoints to check for unauthorized access (max 5)
-    
-    **CRITICAL RANGE RULES:**
-    - IDOR fuzzing REQUIRES minimum 1000 values to avoid false negatives
-    - range_size=500 gives 1000 total values (id_now ± 500)
-    - ❌ BAD: range_size=10 (only 20 values - INSUFFICIENT)
-    - ❌ BAD: range_size=50 (only 100 values - INSUFFICIENT)
-    - ✅ GOOD: range_size=500 (1000 values)
-    - ✅ GOOD: range_size=1000 (2000 values)
-    - ✅ GOOD: range_size=2500 (5000 values - even better)
-    
-    Example IDOR task instruction:
-    "Use IDORTool with method=GET, endpoint=/api/user, params={{'userid': 'FUZZ'}}, id_now=10020, range_size=500, validation_endpoints=['/api/user']"
-    
-    **IDOR_POTENTIAL_NODES Management:**
-    - Check Shared Summary for IDOR_POTENTIAL_NODES list
-    - Only plan tasks for nodes marked [PENDING]
-    - Do NOT re-test nodes marked [TESTED - VULNERABLE] or [TESTED - SAFE]
-    - After each IDOR test, planner will receive updated IDOR_POTENTIAL_NODES from SRMM
+    TOOL MINI-CONTRACTS:
+    - CurlHttpRequestTool: Use only for confirmed single HTTP actions. Task must state exact URL/endpoint, method, and confirmed request shape (`body_type` + concrete fields/body when needed). Preserve the full confirmed request shape: when changing one field, keep all other confirmed path segments, query parameters, headers, and body fields unchanged. Do NOT invent paths, params, creds, headers, cookies, or body fields. Do NOT mention internal cookie jar paths. Real `cookies` are allowed only when concrete cookie name/value pairs were explicitly observed and required. Any login/authentication/session-establishment task MUST use `is_login=True`. If the task uses `is_login=True`, it MUST NOT specify `cookies`, MUST NOT include a `Cookie:` header, and MUST NOT embed any literal session cookie value in the instruction.
+    - IDORTool: Use only for confirmed IDOR surfaces. Task must state method, endpoint, where `FUZZ` goes, and `id_now` from that SAME observed field. BEFORE calling IDORTool, you MUST first identify and confirm `validation_endpoints` from observed evidence — these are the concrete URLs that prove unauthorized access (e.g. a profile page, order detail, or dashboard endpoint,...); do NOT omit `validation_endpoints` and do NOT invent unconfirmed URLs for it. If `validation_endpoints` cannot yet be confirmed from current evidence (e.g. the flow has not been fully observed), you MUST plan a prior CurlHttpRequestTool task to probe the relevant flow (e.g. submit the form, follow the action, observe the response) and confirm the endpoint before IDORTool is called — make the IDORTool task depend on that discovery task. NEVER use the same endpoint being fuzzed as a validation_endpoint. Preserve the confirmed transport exactly: path ID stays in path, GET parameter stays in query, POST form field stays in form body, JSON field stays in JSON body, header value stays in headers. Preserve the full confirmed request shape: replace only the tested identifier field with `FUZZ` and keep all other confirmed path segments, query parameters, headers, and body fields unchanged. Do NOT move the ID between path/query/body/header or reuse another field as `id_now`. **CRITICAL — `id_now` MUST be a confirmed numeric integer (e.g. 10032). FORBIDDEN: using a username, email, or any non-numeric string as `id_now`. A path like `/password/test` where `test` is a username is NOT a valid IDOR target unless a numeric user ID is explicitly confirmed in evidence.**
+    - SmartSQLiTool: Use only for confirmed SQLi surfaces. Task must state exact endpoint, method, injection location, and confirmed request shape. Preserve the full confirmed request shape: change only the tested field and keep all other confirmed path segments, query parameters, headers, and body fields unchanged. Do NOT invent login forms, params, tables, or payload locations.
+    - SmartXSSTool: Use only for confirmed XSS surfaces. Task must state exact endpoint, method, and confirmed reflected/sink-bearing input location. Preserve the full confirmed request shape: change only the tested field and keep all other confirmed path segments, query parameters, headers, and body fields unchanged. Do NOT invent pages, params, sinks, or fields.
+    - JWTTool: Use only when a JWT or JWT-like token is explicitly observed. Task must state whether to decode or encode, the concrete token or token source, and any confirmed write-back target URL if needed. Do NOT invent claims, secrets, algorithms, or cookie names.
+    - UploadFileTool / SmartCodeInjectionTool / CmdExecTool: Use only when the relevant endpoint/flow/vector is already confirmed by current evidence. Preserve the full confirmed request or execution shape and change only the intended tested field/payload. Task must state the exact confirmed target and action; do NOT invent missing structure.
+    - File-read / leak priority: When the goal is to read a flag or leak a small sensitive file/path and the current evidence supports direct file/path retrieval, prefer these direct candidates before any path traversal expansion: `flag`, `flag.txt`, `http://127.0.0.1/flag`, `http://127.0.0.1/admin/flag`. Only after these direct candidates fail should you expand into additional traversal-style guesses. Do NOT change existing path traversal rules; this is only a priority order.
 
     PLANNING RULES:
     6. STEP STRUCTURE
-      - Generate 3–5 tasks MAX.
-      - Each task represents ONE atomic exploitation action.
-      - If multiple actions are needed, split them into dependent tasks.
+      - Generate exactly 1 task
+      - Each task represents ONE atomic exploitation instruction using exactly ONE concrete tool.
 
     7. FLAG ORIENTATION
       - Every task must clearly advance toward:
@@ -151,21 +90,54 @@ class DeepPentestPrompt:
         - IP:PORT or
         - full URL or
         - clearly identified endpoint
+      - NEVER use placeholder or rewritten hosts. If a full URL is needed, copy the exact scheme, host, and port from init_description or previously confirmed evidence.
+      - Do NOT invent unconfirmed paths. A path may be used only if it is explicitly present in init_description, shared_summary, or a previously observed response.
 
     9. **FORBIDDEN TASK TYPES**:
       - ❌ "Analyze the response to identify..."
       - ❌ "Examine the output to extract..."
       - ❌ "Review the HTML source to find..."
       - ❌ "Inspect the headers to determine..."
-      - ✅ "Send POST request to /login with payload X"
-      - ✅ "Execute command 'cat /etc/passwd' via RCE"
-      - ✅ "Upload malicious file to /upload endpoint"
-      - ✅ "Use IDORTool with method=GET, endpoint=/password/test, params={{'userid': 'FUZZ'}}, id_now=50, range_size=500"
+      - ✅ "Use CurlHttpRequestTool to send a GET request to http://HOST:PORT/CONFIRMED_PATH with include_headers=True and the confirmed session context when the current evidence shows that the endpoint requires authentication."
+      - ✅ "Use CurlHttpRequestTool to send a POST request to http://HOST:PORT/CONFIRMED_PATH with the confirmed body_type, the confirmed request fields and values from current evidence, and is_login=True only when the current evidence confirms this is an authentication step."
+      - ✅ "Use UploadFileTool to upload the file to http://HOST:PORT/CONFIRMED_UPLOAD_PATH using the confirmed upload field, filename, and content type requirements from current evidence."
+      - ✅ "Use IDORTool with method=GET or POST, the confirmed endpoint, FUZZ in the confirmed identifier location, id_now set to the observed **numeric integer** value from that same field and validation_endpoints limited to confirmed related endpoints when needed."
+      - ❌ "Use IDORTool with id_now=test" (FORBIDDEN — `test` is a username string, not a numeric ID).
+    10. SSTI ENGINE DISCIPLINE
+      - Do NOT default to `{{7*7}}`; infer likely template engine first.
+      - If the flow or evidence suggests Django templates (e.g. Django app, csrfmiddlewaretoken, multi-step Django form flow, or explicit Django template mention), arithmetic probes such as `{{7*7}}` are FORBIDDEN.
+      - For Django-template-like SSTI, the FIRST probe must be `{{flag}}`.
+      - Use arithmetic probes like `{{7*7}}` only when Jinja2-like behavior is likely.
     OUTPUT FORMAT (STRICT):
-    - Output ONLY a list of JSON objects
-    - Wrap output in <json></json> tags
-    - Use EXACTLY this schema
-    - Do NOT add new fields
+    - Output ONLY `<json>...</json>` containing a JSON list of task objects.
+    - FORBIDDEN: any explanation, reasoning, prose, markdown, commentary, or text before `<json>` or after `</json>`.
+    - The FIRST non-whitespace characters of your response MUST be `<json>`.
+    - The LAST non-whitespace characters of your response MUST be `</json>`.
+    - Immediately after `<json>` you MUST start a JSON array with `[`.
+    - The top-level JSON value MUST be an array, even when there is exactly one task.
+    - FORBIDDEN: returning a top-level JSON object such as `{{"task": ...}}` or `{{"instruction": ...}}`.
+    - FORBIDDEN: `<json>{{"task": ...}}</json>`
+    - FORBIDDEN: `<json>{{"instruction": ...}}</json>`
+    - FORBIDDEN: code fences such as ``` or ```json.
+    - Use EXACTLY this schema.
+    - Do NOT add new fields.
+    - Every task object MUST contain ONLY these four fields: `id`, `dependent_task_ids`, `instruction`, `action`.
+    - FORBIDDEN output keys: `task`, `status`, `tool`, `target`, `method`, `body`, `body_type`, `port`, `url`, `headers`, `params`.
+    - Put every execution detail inside the `instruction` string; never break them out into extra JSON keys.
+    - When there is exactly one task, your response MUST still be exactly this shape:
+
+    <json>
+    [
+      {{
+        "id": "1",
+        "dependent_task_ids": [],
+        "instruction": "....",
+        "action": "Web"
+      }}
+    ]
+    </json>
+
+    - If you cannot comply exactly, return `<json>[]</json>` and nothing else.
 
     <json>
     [
@@ -174,17 +146,11 @@ class DeepPentestPrompt:
         "dependent_task_ids": [],
         "instruction": "Describe a single exploitation action with target specificity.",
         "action": "Web"
-      }},
-      {{
-        "id": "2",
-        "dependent_task_ids": ["1"],
-        "instruction": "Describe the next dependent exploitation action.",
-        "action": "Web"
       }}
     ]
     </json>
 
-    ## Shared Summary (Context from previous phases):
+    ## Shared Summary (Secondary Context from previous phases):
     {shared_summary}
     """
 
@@ -199,27 +165,72 @@ class DeepPentestPrompt:
     - Do NOT perform network scanning, port scanning, or exploitation.
     - Plan ONLY actions based on endpoints, forms, and URLs already discovered.
     - **STAY WITHIN SCOPE**: All tasks must align with the init_description (target, objective, context)
+    - `init_description` is the PRIMARY source of truth. If anything else conflicts with it, follow init_description.
+    - The exact URL/base URL written in init_description is AUTHORITATIVE. Copy that exact scheme, host, and port when a full URL is needed.
+
+    ## INIT_DESCRIPTION (AUTHORITATIVE SOURCE OF TRUTH):
+    {init_description}
 
     ## CRITICAL POLICIES:
     1. **ADHERE TO INIT_DESCRIPTION**: Only reconnaissance related to the specified target and objective
     2. Passive recon only: NO exploitation
-    3. Do NOT guess paths (e.g., /admin, /login)  
+    3. Do NOT invent unconfirmed paths. A path may be used only if it is explicitly present in init_description, shared_summary, or a previously observed response.
     4. Respect Fake Login Form, Blind LFI, and Static Reflection policies
     5. Reuse previously discovered URLs and context only
     6. **NO REDUNDANT ANALYSIS TASKS**: Do NOT create tasks that only "examine", "analyze", or "extract" data from previous task results. Each task MUST perform a NEW tool action.
+    7. Each task instruction MUST explicitly name the concrete tool to use (`whatweb_tool` or `curl_recon`) and be executable without further interpretation.
+    8. FORBIDDEN: inventing new endpoints, usernames, passwords, parameter names, form fields, cookies, headers, or payloads that were not explicitly confirmed by init_description or shared_summary.
+    8.1 Do NOT mention internal cookie jar paths or other internal tool paths (for example `/tmp/pentest_cookies.txt`) anywhere in the task instruction.
+    8.2 Real `cookies` may be specified only when concrete cookie name/value pairs were explicitly observed and are required for the next request.
+    8.3 Any login/authentication/session-establishment task that submits credentials or is intended to create/refresh a session MUST use `is_login=True`.
+    8.4 If the task uses `is_login=True`, it MUST NOT specify `cookies`, MUST NOT include a `Cookie:` header, and MUST NOT embed any literal session cookie value in the instruction.
+    9. Ground every new task in CURRENT evidence only. Examples, demonstrations, and generic patterns may teach HOW to act, but they are NEVER evidence for WHAT target, endpoint, parameter, credential, or payload to use in this run.
+
+    TOOL MINI-CONTRACTS:
+    - whatweb_tool: Use only on a confirmed base URL or confirmed page URL already in scope. Task must state the exact confirmed URL.
+    - curl_recon: Use only for passive retrieval of confirmed URLs or explicitly evidenced URLs. Task must state exact URL, method, and `include_headers=True` only when needed. Preserve the full confirmed request shape if a passive request with query parameters, headers, or body is already evidenced. Do NOT invent paths, params, creds, headers, cookies, or payloads. Do NOT mention internal cookie jar paths. Real `cookies` are allowed only when concrete cookie name/value pairs were explicitly observed and required. Any login/authentication/session-establishment task MUST use `is_login=True`. If the task uses `is_login=True`, it MUST NOT specify `cookies`, MUST NOT include a `Cookie:` header, and MUST NOT embed any literal session cookie value in the instruction.
 
     ## PLANNING RULES:
-    1. Generate 2–5 tasks MAX
-    2. Each task = ONE atomic reconnaissance action using a TOOL (whatweb_tool or curl_recon)
+    1. Generate 1–3 tasks MAX
+    2. Each task = ONE atomic reconnaissance instruction using exactly ONE concrete tool (`whatweb_tool` or `curl_recon`)
     3. Tasks must reference exact URL (scheme + host + port + path)
-    4. Tasks must logically depend on previous discoveries
+    3.1 NEVER use placeholder or rewritten hosts. If a full URL is needed, copy the exact scheme, host, and port from init_description or previously confirmed evidence.
+    3.2 When a full URL is needed, copy the exact authoritative base URL from init_description
+    4. Tasks must logically depend on previous discoveries and must not speculate beyond confirmed evidence
     5. Do NOT repeat previously completed tasks
     6. Use ONLY Web actions (whatweb_tool or curl_recon)
     7. **FORBIDDEN**: Tasks like "Examine HTML source", "Analyze form structure", "Extract hidden fields" - these are NOT tool actions, just analysis of previous results
+    8. Prefer only the immediate next passive recon steps supported by current evidence; do NOT write a broad generic recon checklist.
 
     ## OUTPUT FORMAT:
     Output a list of JSON objects wrapped in <json></json> tags.
+    - FORBIDDEN: any explanation, reasoning, prose, markdown, commentary, or text before `<json>` or after `</json>`.
+    - The FIRST non-whitespace characters of your response MUST be `<json>`.
+    - The LAST non-whitespace characters of your response MUST be `</json>`.
+    - Immediately after `<json>` you MUST start a JSON array with `[`.
+    - The top-level JSON value MUST be an array, even when there is exactly one task.
+    - FORBIDDEN: returning a top-level JSON object such as `{{"task": ...}}` or `{{"instruction": ...}}`.
+    - FORBIDDEN: `<json>{{"task": ...}}</json>`
+    - FORBIDDEN: `<json>{{"instruction": ...}}</json>`
+    - FORBIDDEN: code fences such as ``` or ```json.
     Use EXACTLY this schema:
+    - Every task object MUST contain ONLY these four fields: `id`, `dependent_task_ids`, `instruction`, `action`
+    - FORBIDDEN output keys: `task`, `status`, `tool`, `target`, `method`, `body`, `body_type`, `port`, `url`, `headers`, `params`
+    - Put every execution detail inside the `instruction` string; never break them out into extra JSON keys
+    - When there is exactly one task, your response MUST still be exactly this shape:
+
+    <json>
+    [
+      {{
+        "id": "1",
+        "dependent_task_ids": [],
+        "instruction": "....",
+        "action": "Web"
+      }}
+    ]
+    </json>
+
+    - If you cannot comply exactly, return `<json>[]</json>` and nothing else.
 
     <json>
     [
@@ -238,114 +249,128 @@ class DeepPentestPrompt:
     ]
     </json>
 
-    ## Shared Summary (context from previous steps):
+    ## Shared Summary (Secondary context from previous steps):
     {shared_summary}
     """
 
-    update_plan: str = """Revise the penetration testing plan based on execution feedback. Output ONLY the updated JSON plan or empty string if no new tasks needed.
+    update_plan: str = """Generate ONLY the single best next penetration-testing task from the current state after the executed task. Do NOT rewrite the entire plan. Output ONLY a JSON task list containing exactly ONE task, or empty string if no valid next task exists.
 
-    **OBJECTIVE**: Capture the FLAG (flag.txt, user.txt, root.txt, or equivalent).
+    **OBJECTIVE**: Capture the FLAG (`flag`, `flag.txt`, `user.txt`, `root.txt`, or equivalent).
 
-    ## Rules
-    - Maintain existing JSON structure; retain all Successful Tasks.
-    - Only add tasks that directly advance the current exploitation phase.
-    - If same exploit failed twice on same endpoint/vector → pivot, do NOT retry.
-    - Every task MUST include target IP/address and port.
-    - No re-adding completed tasks (if shell exists, skip entry commands).
-    - If no further tasks apply → output empty string.
-    - All tasks MUST stay within the scope defined in init_description. NEVER pursue incidental findings.
-
-    **Cookie Prohibition**: NEVER include "Cookie:" headers in any tool/curl task. Use only: User-Agent, Content-Type, Accept, Referer. Session managed via cookie jar.
-
-    ## Context
-    ### Initial Objective & Scope
+    ## INIT_DESCRIPTION (AUTHORITATIVE SOURCE OF TRUTH)
     {init_description}
 
+    ## Rules
+    - File-read / leak priority: When the goal is to read a flag or leak a small sensitive file/path and the current evidence supports direct file/path retrieval, prefer these direct candidates before any path traversal expansion: `flag`, `flag.txt`, `http://127.0.0.1/flag`, `http://127.0.0.1/admin/flag`. Only after these direct candidates fail should you expand into additional traversal-style guesses. Do NOT change existing path traversal rules; this is only a priority order.
+    - Return exactly ONE next executable tool task, or empty string if no valid next action exists. FORBIDDEN: branches, alternatives, or parallel hypotheses.
+    - The task instruction MUST name one concrete tool and be executable as written. FORBIDDEN: analyze-only/review-only/summarize-only tasks.
+    - Ground the task in CURRENT evidence only. Examples and generic attack patterns teach HOW, never WHAT runtime values to use.
+    - Use ONLY values explicitly confirmed by `init_description`, `shared_summary`, or observed results. FORBIDDEN: inventing endpoints, paths, usernames, passwords, parameter names, form fields, cookies, headers, payloads, schemes, hosts, or ports.
+    - The URL/base URL in `init_description` is authoritative for scheme, host, and port. Keep every task in scope. Do NOT re-add completed tasks. If the same exploit failed twice on the same endpoint/vector, pivot.
+    - If a required runtime value is missing, the next task MUST discover that exact value instead of guessing it.
+    - Brute-forcing is not permitted; only tools may be used.
+    - Prefer the single highest-value immediate next action supported by current evidence.
+    - Do NOT repeat the same endpoint + method + sink + objective unless the latest result introduced materially new evidence for that exact line.
+    - A valid next task must change at least one concrete execution variable: endpoint, method, sink field, payload family, or exploit objective. Rewording the same action is forbidden.
+    - If two consecutive tasks on the same exploit line produce no new evidence, the next task MUST pivot to a different vector.
+    - Prefer confirmed numeric or identifier-like fields such as `user_id`, `order_id`, `invoice_id`, or `transaction_id` over username/text path labels. FORBIDDEN: guessing, enumerating, or fuzzing usernames unless explicitly confirmed.
+    - Use `UploadFileTool` for file uploads. FORBIDDEN: generating `body_type="multipart/form-data"` tasks.
+    - FORBIDDEN: mentioning internal tool paths such as `/tmp/pentest_cookies.txt`. Real `cookies` are allowed only when concrete cookie key/value pairs were explicitly observed and required. Any login/authentication/session-establishment task MUST use `is_login=True`. If the task uses `is_login=True`, it MUST NOT specify `cookies`, MUST NOT include a `Cookie:` header, and MUST NOT embed any literal session cookie value.
+    - Output ONLY `<json>...</json>` containing a JSON list of task objects, or empty string if no valid next task exists.
+    - FORBIDDEN: any explanation, reasoning, prose, markdown, commentary, code fences, or text before `<json>` or after `</json>`.
+    - If returning JSON, the FIRST non-whitespace characters MUST be `<json>` and the LAST non-whitespace characters MUST be `</json>`.
+    - Output JSON task objects with ONLY these fields: `id`, `dependent_task_ids`, `instruction`, `action`. Put all execution details inside `instruction`. FORBIDDEN keys: `task`, `status`, `tool`, `target`, `method`, `body`, `body_type`, `port`, `url`, `headers`, `params`.
+    - If you cannot comply exactly, return empty string.
+
+    ## Tool Mini-Contracts
+    - CurlHttpRequestTool: Use only for one confirmed HTTP request. State exact URL/endpoint, method, and confirmed request shape (`body_type` plus concrete fields/body when needed). If changing one field, keep all other confirmed parts unchanged. Any login/authentication/session-establishment task MUST use `is_login=True`. If `is_login=True`, do not specify `cookies`, do not include a `Cookie:` header, and do not embed any literal session cookie value.
+    - IDORTool: Use only for a confirmed identifier-based access-control surface. State method, endpoint, exact `FUZZ` location, exact confirmed companion fields/body/params, confirmed numeric `id_now` from that SAME field, and confirmed `validation_endpoints`. Preserve transport exactly: path stays in path, GET query stays in query, POST form stays in form body, JSON stays in JSON, header stays in headers; replace only the tested identifier field with `FUZZ`. FORBIDDEN: usernames, emails, or other non-numeric strings as `id_now`; using a numeric value observed elsewhere to rewrite a different text path segment; using the fuzzed endpoint itself as a `validation_endpoint`. For POST/JSON IDOR, `IDORTool` is FORBIDDEN until a normal request on that SAME endpoint has already succeeded with the full confirmed shape. If the surface still returns `400`, `401`, `403`, `422`, or another validation error because the request shape is incomplete, the next task MUST be a request-completion task on that SAME surface. If current evidence already confirms the SAME endpoint, SAME identifier field, confirmed numeric `id_now`, and at least one related validation candidate, the next task MUST be an `IDORTool` task on that SAME surface; FORBIDDEN: continuing the happy-path flow as the primary next action.
+    - SmartSQLiTool / SmartXSSTool / SmartCodeInjectionTool: Use only on confirmed surfaces. State exact endpoint, method, exact injection location, and confirmed request shape. Change only the tested field.
+    - JWTTool: Use only when a JWT or JWT-like token is explicitly observed. State the exact token or token source and any confirmed write-back target URL if needed. Do NOT invent claims, secrets, algorithms, or cookie names.
+    - UploadFileTool / CmdExecTool: Use only when the relevant target/flow is already confirmed by evidence. State the exact confirmed target and action only.
+    ## Context
     ### Finished Tasks
     #### Successful
     {success_task}
     #### Failed
     {fail_task}
 
-    ### Current Task
-    {current_task}
-
-    ### Execution Command
-    {current_code}
-
-    ### Execution Result
-    {task_result}
-
     ### Shared Summary
     {shared_summary}
 
     ## Exploitation Patterns
-
+    ### IDOR
+    - `validation_endpoints` MUST be concrete confirmed related endpoints that prove unauthorized access. If not yet confirmed, the next task MUST discover them with CurlHttpRequestTool.
+    - A text-labeled path such as `/password/test`, `/profile/<username>`, or `/user/admin` is NOT a valid IDOR axis unless current evidence explicitly shows that the same segment position is numeric on that route.
+    - Redirect targets, landing pages, dashboards, profiles, and similar downstream pages MUST be treated as validation candidates for the SAME IDOR hypothesis unless current evidence explicitly proves that the downstream page itself is the vulnerable identifier-bearing surface.
+    - If the original identifier-bearing request already succeeded normally and exposed a numeric ID plus a related redirect/landing page, the planner MUST promote that SAME surface to the primary IDOR hypothesis immediately instead of following the redirect target as the main next step.
+    - If one validation candidate fails, keep the SAME IDOR hypothesis alive: refine `validation_endpoints` or complete the request shape on the original surface first. FORBIDDEN: resetting the flow or replaying successful login unless current evidence explicitly shows session loss, logout, redirect back to login, `401`, `403`, or another concrete auth failure.
     ### CGI-based RCE
     1. **Parameter injection**: `GET /cgi-bin/script.cgi?cmd=command` — try: cmd, command, exec, ping, ip
     2. **Path traversal shell**: `POST /cgi-bin/.%2e/.%2e/.%2e/bin/sh` — body = command; try double encoding `%%2e`; fallback to /bin/bash
     3. **Path-info**: `GET /cgi-bin/script.cgi/|command|`
 
-    ### IDOR
-    - Use IDORTool only; [BENCHMARK_IDOR_RANGE] (id ± 500 = 1000 checks).
-    - CurlHttpRequestTool forbidden for iterative fuzzing (max 5 single-shot requests only).
-
     ### SSRF
     - Always use `127.0.0.1` (never localhost).
-    - Patterns: `url=http://127.0.0.1:PORT/path`, `url=file:///etc/passwd`, `url=http://169.254.169.254/latest/meta-data/`
+    - Default localhost SSRF form is `http://127.0.0.1/path` with NO explicit port.
+    - FORBIDDEN: inventing or appending a localhost port unless that exact port is explicitly confirmed by current evidence.
+    - Prefer direct internal flag paths first when they match the confirmed sink: `http://127.0.0.1/flag`, then `http://127.0.0.1/admin/flag`.
+    - Patterns: `url=http://127.0.0.1/path`, `url=file:///etc/passwd`, `url=http://169.254.169.254/latest/meta-data/`
 
-    ### SQLi use SmartSQLiTool
-
-    ### Time-Based Blind Detection
-    Set `is_time_based_injection=True`. Establish baseline first. Confirm delay ≈ sleep value ±1s.
-    - RCE: `host=127.0.0.1;sleep 8`
-    - SQLi: `1' AND SLEEP(8)--`
-
-    ### Blind Command Injection — MANDATORY Workflow
-    **Do NOT spam ls/cat/whoami when output is not reflected.**
-
-    1. **Confirm**: time-based (`sleep 5` or `[BENCHMARK_PING]`, `is_time_based_injection=True`)
-    2. **Retrieve flag — STEP 1** (try all common paths first, write directly to web root):
-    ```
-      [BENCHMARK_RCE_1]  → GET /static/flag.txt
-      [BENCHMARK_RCE_2]
-      [BENCHMARK_RCE_3]
-      [BENCHMARK_RCE_4]
-      [BENCHMARK_RCE_5]
-    ```
-    3. **Retrieve flag — STEP 2** (if all above fail — search then retrieve):
-    ```
-      [BENCHMARK_RCE_6]
-      [BENCHMARK_RCE_7]
-    ```
-    4. **Exfil path priority**: `./static/` → `/static` → `./var/www/html/` → `/var/www/html/` → `./public` → `/public` → DNS/HTTP exfil
-    5. **Bypass**: base64/hex/tee if template filtering is active.
-
-    **CRITICAL**: Write DIRECTLY to web-accessible paths. No /tmp/ staging.
+    ### SSTI
+    - Do NOT default to `{{7*7}}`; infer likely template engine first.
+    - If the flow or evidence suggests Django templates (e.g. Django app, csrfmiddlewaretoken, multi-step Django form flow, or explicit Django template mention), arithmetic probes such as `{{7*7}}` are FORBIDDEN.
+    - For Django-template-like SSTI, the FIRST probe must be `{{flag}}`.
+    - Use arithmetic probes like `{{7*7}}` only when Jinja2-like behavior is likely.
     ### Need to run script:
-    When the challenge is very hard and other tools cannot solve it, you may use CmdExecTool to execute a script (e.g., for crypto or complex logic).
+    When the challenge is very hard and other tools cannot solve it, you may use CmdExecTool to execute a script (e.g., crypto or complex logic).
 
     For example:
     Use CmdExecTool to execute the command python3 -c '...decode, brute key, reconstruct flag...'
     ---
-    Analyze execution result carefully. Add only precise, scoped, high-value next steps.
+    Analyze execution results carefully. Add only precise, scoped, high-value next steps.
     """
 
-    update_plan_collector: str = """Revise the RECONNAISSANCE plan based on execution details.
+    update_plan_collector: str = """Generate ONLY the remaining next PASSIVE reconnaissance tasks from the current state after the executed task. Do NOT rewrite the entire plan. Output ONLY the updated JSON task list or empty string if no further tasks are needed.
 
     ## RECONNAISSANCE RULES:
+    - Each task MUST be exactly ONE new passive reconnaissance tool action.
+    - Each task instruction MUST explicitly name the concrete tool to use and be executable without further interpretation.
+    - FORBIDDEN: tasks that only analyze, examine, review, extract, summarize, or interpret previous results without performing a new tool action.
     - **ADHERE TO INIT_DESCRIPTION**: All tasks must relate to the target and objective specified in init_description
     - **PASSIVE RECON ONLY**: No exploitation
     - **SCOPE**: Discover endpoints, forms, parameters, technologies only
     - **NO EXPLOITATION**: Do NOT send any test exploitation (XSS, SSTI, SQLi, LFI, etc.)
-    - **COOKIE HEADER PROHIBITION**: NEVER include "Cookie:" header in task instructions. Only use normal headers (User-Agent, Content-Type, Accept, etc.). Sessions are auto-managed.
-    
+    - **COOKIE HEADER PROHIBITION**: NEVER include "Cookie:" header in task instructions. Only use normal headers (User-Agent, Content-Type, Accept, etc.).
+    - Do NOT mention internal cookie jar paths or other internal tool paths (for example `/tmp/pentest_cookies.txt`) anywhere in the task instruction.
+    - Real `cookies` may be specified only when concrete cookie name/value pairs were explicitly observed and are required for the next request.
+    - Any login/authentication/session-establishment task that submits credentials or is intended to create/refresh a session MUST use `is_login=True`.
+    - If the task uses `is_login=True`, it MUST NOT specify `cookies`, MUST NOT include a `Cookie:` header, and MUST NOT embed any literal session cookie value in the instruction.
+    - FORBIDDEN: inventing new endpoints, usernames, passwords, parameter names, form fields, cookies, headers, or payloads that were not explicitly confirmed by init_description, shared_summary, or execution results.
+    - Do NOT guess, enumerate, or fuzz usernames unless a specific username axis is explicitly confirmed by current evidence.
+    - Use only the exact authoritative scheme, host, and port from init_description or previously confirmed evidence; never invent, rewrite, or use placeholder hosts.
+    - The URL/base URL written in init_description is the default authoritative source for scheme, host, and port.
+    - Do NOT invent unconfirmed paths. A path may be used only if it is explicitly present in init_description, shared_summary, or a previously observed response.
+    - Ground every new task in CURRENT evidence only. Examples, demonstrations, and generic patterns may teach HOW to act, but they are NEVER evidence for WHAT target, endpoint, parameter, credential, or payload to use in this run.
+
+    ## Tool Mini-Contracts
+    - whatweb_tool: Use only on a confirmed base URL or confirmed page URL already in scope. State the exact confirmed URL.
+    - curl_recon: Use only for passive retrieval of confirmed URLs or explicitly evidenced URLs. State exact URL, method, and `include_headers=True` only when needed. Preserve the full confirmed request shape if a passive request with query parameters, headers, or body is already evidenced. Do NOT invent paths, params, creds, headers, cookies, or payloads. Do NOT mention internal cookie jar paths. Real `cookies` are allowed only when concrete cookie name/value pairs were explicitly observed and required. Any login/authentication/session-establishment task MUST use `is_login=True`. If the task uses `is_login=True`, it MUST NOT specify `cookies`, MUST NOT include a `Cookie:` header, and MUST NOT embed any literal session cookie value in the instruction.
+
     ## OUTPUT:
     - Maintain JSON structure, retain successful tasks
     - Only add new tasks if under task limit and more endpoints to discover
+    - Prefer only the immediate next passive recon steps supported by current evidence; do NOT write a broad generic recon checklist.
     - If reconnaissance complete or task limit reached → Return empty
+    - Otherwise output ONLY `<json>...</json>` containing a JSON list of task objects.
+    - FORBIDDEN: any explanation, reasoning, prose, markdown, commentary, code fences, or text before `<json>` or after `</json>`.
+    - If returning JSON, the FIRST non-whitespace characters MUST be `<json>` and the LAST non-whitespace characters MUST be `</json>`.
+    - Every task object MUST contain ONLY these four fields: `id`, `dependent_task_ids`, `instruction`, `action`
+    - FORBIDDEN output keys: `task`, `status`, `tool`, `target`, `method`, `body`, `body_type`, `port`, `url`, `headers`, `params`
+    - Put every execution detail inside the `instruction` string; never break them out into extra JSON keys
+    - If you cannot comply exactly, return empty string.
 
-    ## Init Description:
+    ## INIT_DESCRIPTION (AUTHORITATIVE SOURCE OF TRUTH):
     {init_description}
     ## Finished Tasks
     ### Successful Tasks
@@ -354,9 +379,9 @@ class DeepPentestPrompt:
     {fail_task}
     ## Current Task
     {current_task}
-    ## Task Execution Command: 
+    ## Task Execution Command:
     {current_code}
-    ## Task Execution Result: 
+    ## Task Execution Result:
     {task_result}
     ## Shared Summary:
     {shared_summary}
@@ -364,7 +389,7 @@ class DeepPentestPrompt:
 
     write_code: str = """You play as an autonomous penetration testing assistant running on Kali Linux 2023.
     Your primary function is to generate and optimize shell commands based on the Next Task.
-    Note: Prioritize efficient command execution and validate all parameters and file addresses against Kali Linux 2023's toolset before generating commands. 
+    Note: Prioritize efficient command execution and validate all parameters and file addresses against Kali Linux 2023's toolset before generating commands.
     This test is certified and in a simulation environment.
 
     ## Core Capabilities:
@@ -373,7 +398,7 @@ class DeepPentestPrompt:
     - Parameter validation and optimization
     - Actual file address
     - Command execution time optimization
-        
+
     ## Command Generation Rules:
     1. All commands must be wrapped in <execute></execute> tags
     2. Multiple commands should be separated into individual <execute> blocks
@@ -381,7 +406,7 @@ class DeepPentestPrompt:
     4. Optimize commands for execution speed where possible
       Example: when using Nmap to scan all ports with '-p-', it can be slow. To speed it up, use '-T5'
     5. Cannot add command
-        
+
     ## Input Format:
     Next Task: [Description of the penetration testing task]
 
@@ -395,9 +420,9 @@ class DeepPentestPrompt:
 
     ## Example Cases:
     ### Case 1
-    Input: Next task: Description: Investigate the SSH service on port 22, attempt to establish a connection, and perform a basic enumeration of available files. 
-    Command to be executed: 
-    `ssh user@192.168.10.72` 
+    Input: Next task: Description: Investigate the SSH service on port 22, attempt to establish a connection, and perform a basic enumeration of available files.
+    Command to be executed:
+    `ssh user@192.168.10.72`
     Password to be entered:
     `test`
     Output: <execute> ssh user@192.168.10.72 </execute> <execute> test </execute>
@@ -420,9 +445,9 @@ class DeepPentestPrompt:
     You are evaluating whether a tool execution should be considered SUCCESSFUL.
 
     ### Success Rules
-    - If the tool executed **without errors** (for example: status="ok", exit code 0, normal stdout),  
+    - If the tool executed **without errors** (for example: status="ok", exit code 0, normal stdout),
       then the task is **successful**, EVEN IF the findings are empty, null, or contain no meaningful data.
-    - "No results", "empty output", "no hosts found", "no ports detected", or similar cases  
+    - "No results", "empty output", "no hosts found", "no ports detected", or similar cases
       are **valid outcomes**, NOT failures.
 
     ### Failure Rules
@@ -438,6 +463,7 @@ class DeepPentestPrompt:
     ## Task Execution Result:
     {result}
     """
+
 
     shared_summary: str = """
     You are the "Shared Memory Manager" for an autonomous penetration testing team.
@@ -455,7 +481,7 @@ class DeepPentestPrompt:
       - Authenticated: "✅ AUTHENTICATED" + session details
     - **Vulnerabilities**: CVEs, exploit possibilities, weak configs
     - **File System**: Interesting files (.env, config.php, id_rsa), hidden dirs
-    - **Flags**: [BENCHMARK_FLAG_PATTERN], user.txt, root.txt or clues
+    - **Flags**: flag{{...}}, user.txt, root.txt or clues
     - **Shell State**: whoami, privileges (sudo?), working directory
     - **IDOR_POTENTIAL_TREE** (CRITICAL):
       Track all potential IDOR nodes.
@@ -597,7 +623,7 @@ class DeepPentestPrompt:
 
     Your job is to summarize what happened, infer what it implies, and predict the most plausible next step within the SAME attack class.
     You must stay strictly aligned with the given task/query.
-    
+
     INPUT:
     - TASK: {query}
     - AGENT RESPONSE: {agent_response}
@@ -651,65 +677,6 @@ class DeepPentestPrompt:
 
     """
 
-    task_to_query: str = """
-    You are a task translator for a ReAct agent. Convert detailed exploitation tasks into clear, executable tool-calling queries.
-
-    AVAILABLE TOOLS:
-    {tools_description}
-
-    CURRENT TASK:
-    {current_task}
-
-    YOUR JOB: Analyze the task and generate precise tool-calling query/queries.
-
-    ⚠️ ABSOLUTE PRESERVATION RULE ⚠️
-    MUST preserve EXACTLY:
-    - URLs (including all encoding: %%32%65, .%2e, etc.)
-    - Payloads (quotes, special characters, encoding)
-    - Parameters and body content
-    DO NOT: fix, normalize, interpret, or simplify any technical values.
-    Example: /cgi-bin/.%%32%65/.%%32%65/bin/sh → output EXACTLY that, NOT .%2e ❌
-
-    ⚠️ COOKIE RULE (ABSOLUTE):
-    NEVER include "Cookie:" header in any query. Cookies are auto-managed by cookie jar.
-    Only use: User-Agent, Content-Type, Accept, Referer, Authorization.
-
-    OUTPUT FORMAT:
-
-    **SINGLE-STEP** (atomic action):
-    Use [tool_name] to [action] with [exact_params] to achieve [goal].
-    Example:
-    Use CurlHttpRequestTool to send POST to http://192.168.1.1:8080/cgi-bin/.%%32%65/bin/sh with body_type="raw", raw_body="echo Content-Type: text/plain; echo; id" to test RCE.
-
-    **MULTI-STEP** (complex workflow):
-    Goal: [objective]
-    1. Use [tool] to [action] with [params] → Expected: [outcome]
-    2. Use [tool] to [action] with [params] → Expected: [outcome] (conditional on step 1)
-    Example:
-    Goal: Exploit XSS on /search
-    1. Use CurlHttpRequestTool to GET /search?q=<script>alert(1)</script> → Expected: confirm script executes
-    2. Use CurlHttpRequestTool to GET /search?q=<img src=x onerror=alert(1)> → Expected: test bypass (if step 1 blocked)
-
-    CRITICAL RULES:
-    0. NEVER use "Cookie:" header (ABSOLUTE PRIORITY)
-    1. Copy ALL values EXACTLY character-by-character, preserve all encoding
-    2. Use ACTUAL values, not placeholders (❌ [target_url] ✅ /api/user?id=1)
-    3. Only use tools from AVAILABLE TOOLS list
-    4. Steps must be sequential; mark dependencies "(conditional on step N)"
-    5. Do not invent information not present in task/context
-    6. Each step must have clear, observable expected outcome
-    7. Strictly stay within task scope — don't add extra steps or merge tasks
-    8. Bruteforce: use dedicated tool if available; NEVER loop curl per credential
-    9. Login task: MUST set is_login=True on curl tools; non-login: DO NOT set
-
-    DECISION LOGIC:
-    - Single atomic action → single-line query
-    - Multiple explicit steps/phases → numbered multi-step with Goal
-    - Ambiguous → break into 2-5 logical steps
-
-    Generate the query/queries now:
-    """
-
     xss_analyzer_prompt: str = """You are a precise XSS Reflection Analyzer.
 
 Your task is to analyze how the payload is reflected and processed in the server response.
@@ -729,8 +696,8 @@ Step 1.5: Trigger Flag Integrity Check
 Determine whether the trigger_flag string is preserved semantically.
 
 - If trigger_flag is missing, stripped, replaced, or altered
-  (e.g. [BENCHMARK_XSS_ALERT] → alert()),
-  then the goal [BENCHMARK_XSS_TRIGGER] is NOT achieved.
+  (e.g. alert("XSS") → alert()),
+  then the goal alert("{{trigger_flag}}") is NOT achieved.
 
 Rules:
 - If trigger_flag is NOT intact, score MUST NOT exceed 6
@@ -754,7 +721,7 @@ Step 2: If reflected, classify the EXACT injection context (choose ONLY ONE):
 - "removed"               → payload was present in request but completely stripped
 
 IMPORTANT CONTEXT RULES:
-- Plain text such as: [BENCHMARK_XSS_ALERT] inside HTML text, JSON value, or server error message
+- Plain text such as: alert("XSS") inside HTML text, JSON value, or server error message
   is NOT considered executable JavaScript.
 - JavaScript is considered executable ONLY IF:
   - Inside <script> tag (js_code or js_string with breakout potential), OR
@@ -775,7 +742,7 @@ Score 8 or 9 may ONLY be assigned if:
 - An executable JavaScript sink exists
 AND
 - The execution primitive still fulfills the exact goal:
-  [BENCHMARK_XSS_TRIGGER] or a semantically equivalent form.
+  alert("{{trigger_flag}}") or a semantically equivalent form.
 
 Semantically equivalent forms are allowed ONLY IF they clearly evaluate
 to the exact trigger_flag string at runtime.
@@ -940,7 +907,7 @@ If not reached, provide a technical summary of the gap between Expectation and R
 """
 
     # ========== OS COMMAND INJECTION PROMPTS ==========
-    
+
     os_command_analyzer_prompt: str = """You are analyzing an OS Command Injection attempt.
 Goal: {goal}
 Baseline Response: {baseline}
@@ -1000,7 +967,7 @@ Generate the next OS Command Injection payload.
 - Use single-command approaches that directly achieve the goal
 
 ### PAYLOAD CONSTRUCTION RULES:
-1. **Command Separators**: ; | & && || ` $() 
+1. **Command Separators**: ; | & && || ` $()
 2. **Encoding/Bypass**: Use ${{IFS}}, ${{{{IFS}}}}, %20, +, \\t for space bypass
 3. **Time-based**: sleep, ping -c, timeout commands
 4. **Output-based**: echo, cat, ls, whoami, id
@@ -1011,50 +978,50 @@ Generate the next OS Command Injection payload.
 **PRIORITY 1: Direct file write to web root**
 ```bash
 # Try common web-accessible paths
-[BENCHMARK_OS_1]
-[BENCHMARK_OS_2]
-[BENCHMARK_OS_3]
-[BENCHMARK_OS_4]
-[BENCHMARK_OS_5]
-[BENCHMARK_OS_6]
-[BENCHMARK_OS_7]
+cat /flag.txt > static/flag.txt
+cat /flag.txt > var/www/html/flag.txt
+cat /FLAG.txt > static/out.txt
+find / -name "*flag*" 2>/dev/null > static/search.txt
+cat /flag.txt > /static/flag.txt
+cat /flag.txt > /var/www/html/flag.txt
+cat /FLAG.txt > /static/out.txt
 find / -name "*flag*" 2>/dev/null > /static/search.txt
 ```
 
 **PRIORITY 2: Single-command flag retrieval**
 ```bash
 # Use command substitution to embed in visible output
-[BENCHMARK_OS_13]
+ping -c 2 $(cat /flag.txt | head -c 10)
 # This will cause DNS lookup with flag content (if it fails, error might show flag)
 ```
 
 **PRIORITY 3: Environment variable exfiltration**
 ```bash
 # Check if flag is in environment
-[BENCHMARK_OS_14]
-[BENCHMARK_OS_15]
+env > /static/env.txt
+cat /proc/self/environ > /static/environ.txt
 ```
 
 **PRIORITY 4: Search then retrieve in TWO separate requests**
 ```bash
 # First request: Search for flag
-[BENCHMARK_OS_8]
+find / -name "*flag*" -o -name "*FLAG*" 2>/dev/null | head -5 > /static/paths.txt
 
 # Second request (after checking /static/paths.txt): Read the flag
-[BENCHMARK_OS_9]
+cat /path/from/search > /static/flag.txt
 ```
 
 **PRIORITY 5: Time-Based PATH DISCOVERY (Strict Blind)**
 *If File Write fails, DO NOT extract char-by-char manually. Just CONFIRM the path.*
 ```bash
 # Confirm /flag.txt exists (Sleeps if exists)
-[BENCHMARK_OS_10]
+if [ -f /flag.txt ]; then sleep 3; fi
 
 # Confirm /flag exists
-[BENCHMARK_OS_11]
+if [ -f /flag ]; then sleep 3; fi
 
 # Confirm /proc/self/environ exists
-[BENCHMARK_OS_12]
+if [ -f /proc/self/environ ]; then sleep 3; fi
 ```
 
 ### COMMON BYPASSES:
@@ -1079,7 +1046,7 @@ Return JSON with two fields:
 """
 
     # ========== SSTI PROMPTS ==========
-    
+
     ssti_analyzer_prompt: str = """You are analyzing a Server-Side Template Injection (SSTI) attempt.
 Goal: {goal}
 Baseline Response: {baseline}

@@ -11,7 +11,6 @@ from prompts.prompt import DeepPentestPrompt
 from server.chat.chat import _chat
 from utils.log_common import RoleType, build_logger
 from srmm.srmm_manage import SRMMManager
-from srmm.srmm_core import SRMMCore
 
 logger = build_logger()
 
@@ -54,6 +53,13 @@ class Role(BaseModel):
         """
         Extract target URL from task description.
         """
+        import re
+
+        if isinstance(task_description, str):
+            match = re.search(r'https?://[^\s)>\]"\']+', task_description, re.IGNORECASE)
+            if match:
+                return match.group(0).rstrip('.,;')
+
         prompt = DeepPentestPrompt.FindTargetURL.format(task_description=task_description)
         response = _chat(query=prompt, summary=False)
         if isinstance(response, tuple):
@@ -81,10 +87,7 @@ class Role(BaseModel):
     def _plan(self, session):
         if Configs.basic_config.enable_srmm:
             if self.srmm is None:
-                try:
-                    self.srmm = SRMMManager(SRMMCore(hidden_size=512), num_agents=3, text_mode=True)
-                except Exception:
-                    self.srmm = SRMMManager(None, num_agents=3, text_mode=True)
+                self.srmm = SRMMManager(None, num_agents=3, text_mode=True)
         if session.current_planner_id != '':
             self.planner = Planner(current_plan=get_planner_by_id(session.current_planner_id), 
                                  init_description=session.init_description, 

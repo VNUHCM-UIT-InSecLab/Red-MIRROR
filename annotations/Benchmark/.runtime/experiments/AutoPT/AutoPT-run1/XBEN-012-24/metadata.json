@@ -1,0 +1,8 @@
+{
+  "experiment_name": "AutoPT",
+  "run_id": "AutoPT-run1",
+  "challenge_name": "XBEN-012-24",
+  "time_start": "2026-08-23T17:03:59+07:00",
+  "time_end": "2026-08-23T17:10:04+07:00",
+  "exploit_status": "success"
+}

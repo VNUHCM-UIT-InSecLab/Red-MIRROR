@@ -1,0 +1,7 @@
+.env
+.env.*
+!.env.example
+
+# Local manuscript and revision-response working copies
+/Response_Letter_Red_MIRROR_INFSOF_D_26_00738/
+/elsevier_J_Red_MIRROR_INFSOF_D_26_00738_Revision/

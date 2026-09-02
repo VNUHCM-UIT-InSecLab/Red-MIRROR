@@ -1,8 +1,5 @@
 import click
 
-from config.config import Configs
-from utils.session import create_tables
-from startup import main as startup_main
 from pentest import main as pentest_main
 
 from utils.log_common import build_logger
@@ -17,11 +14,10 @@ def main():
 
 @main.command("init")
 def init():
-    Configs.set_auto_reload(False)
-    logger.success(f"Start initializing the project data directory：{Configs.PENTEST_ROOT}")
-    Configs.basic_config.make_dirs()
-    logger.success("Creating all data directories: Success.")
+    from config.config import Configs
+    from utils.session import create_tables
 
+    Configs.set_auto_reload(False)
     create_tables()
     logger.success("Initializing database: Success.")
 
@@ -30,7 +26,17 @@ def init():
 
     logger.success("Generating default configuration file: Success.")
 
-main.add_command(startup_main, "start")
+
+@main.command("start")
+@click.option("-a", "--all", "all", is_flag=True, help="run api.py and webui.py")
+@click.option("--api", "api", is_flag=True, help="run api.py")
+@click.option("-w", "--webui", "webui", is_flag=True, help="run webui.py server")
+def start(all, api, webui):
+    from startup import main as startup_main
+
+    startup_main.callback(all, api, webui)
+
+
 main.add_command(pentest_main, "autopentest")
 
 if __name__ == "__main__":
