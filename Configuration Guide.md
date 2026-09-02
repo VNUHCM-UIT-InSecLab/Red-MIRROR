@@ -138,16 +138,28 @@ Create the database first, grant the configured user access to it, and then init
 python cli.py init
 ```
 
-## Optional Tool Tokens
+## Creating and Configuring `.env`
 
-The `.env` file contains optional credentials used by reconnaissance helpers:
+Create a local `.env` file in the Red-MIRROR repository root before running the reconnaissance and exploitation tools. The file is intentionally ignored by Git:
+
+```bash
+cd /path/to/Red-MIRROR
+touch .env
+```
+
+Add the GitHub and NVD credentials to that file:
 
 ```dotenv
 GITHUB_TOKEN=YOUR_GITHUB_TOKEN
 NVD_API_KEY=YOUR_NVD_API_KEY
 ```
 
-These tokens improve authenticated access to GitHub and the NVD API but are not model-provider credentials.
+Replace the placeholders in your local copy with tokens obtained from [GitHub token settings](https://github.com/settings/tokens) and the [NVD developer portal](https://nvd.nist.gov/developers/request-an-api-key). Keep the token scopes as narrow as possible. Restart the Red-MIRROR process after changing `.env` so that the updated environment is loaded.
+
+## Optional Tool Tokens
+
+The `.env` file contains optional credentials used by reconnaissance and vulnerability-research helpers:
+`GITHUB_TOKEN` enables authenticated GitHub API access, while `NVD_API_KEY` enables authenticated NVD API requests. These are optional tool tokens, not model-provider credentials.
 
 ## Credential Handling
 
