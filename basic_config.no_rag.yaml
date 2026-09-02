@@ -3,7 +3,6 @@ log_time_markers_only: true
 enable_rag: false
 enable_srmm: true
 enable_reflection: true
-enable_advance_tools: false
 mode: auto
 http_default_timeout: 300
 kali:
