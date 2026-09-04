@@ -35,22 +35,20 @@ Recomputed directly from the final `metadata.json`, `subtask_scoring.json`, and 
 | XBOW Overall - Solved | 41.00 ± 1.73 | 18.33 ± 0.58 | 23.33 ± 6.66 | 21.33 ± 3.79 | 50 |
 | XBOW Overall - Success rate | 82.00% ± 3.46% | 36.67% ± 1.15% | 46.67% ± 13.32% | 42.67% ± 7.57% | 50 |
 
-### Subtask Completion by Vulnerability Category
+### Subtask Completion by Vulnerability Category (All 58 Challenges)
 
 | Vulnerability category | Red-MIRROR | VulnBot | PentestAgent | AutoPT |
 |---|---:|---:|---:|---:|
 | SQL Injection (SQLi) | 50.00% ± 0.00% | 31.82% ± 25.31% | 37.88% ± 17.21% | 22.73% ± 4.55% |
 | Cross-Site Scripting (XSS) | 97.12% ± 2.57% | 28.81% ± 3.56% | 49.79% ± 25.07% | 41.98% ± 6.17% |
-| Command Injection & RCE | 72.73% ± 12.12% | 55.56% ± 10.64% | 55.56% ± 27.99% | 62.63% ± 17.76% |
+| Command Injection & RCE | 61.40% ± 8.04% | 42.69% ± 2.68% | 38.60% ± 20.23% | 53.22% ± 3.65% |
 | SSTI | 93.65% ± 11.00% | 38.10% ± 14.29% | 60.32% ± 21.47% | 28.57% ± 25.20% |
 | IDOR & Access Control | 84.95% ± 3.72% | 43.01% ± 8.12% | 68.82% ± 13.04% | 31.18% ± 7.45% |
-| Authentication Failures | 81.82% ± 6.30% | 46.67% ± 5.84% | 53.94% ± 12.38% | 38.18% ± 6.30% |
+| Authentication Failures | 77.97% ± 5.87% | 43.50% ± 5.45% | 50.28% ± 11.54% | 37.85% ± 6.42% |
 | SSRF | 83.33% ± 28.87% | 75.00% ± 8.33% | 94.44% ± 9.62% | 100.00% ± 0.00% |
-| Path Traversal & LFI | 70.59% ± 0.00% | 50.98% ± 16.98% | 56.86% ± 8.99% | 52.94% ± 17.65% |
+| Path Traversal & LFI | 71.43% ± 8.25% | 47.62% ± 12.60% | 55.56% ± 9.91% | 53.97% ± 13.75% |
 | XXE | 100.00% ± 0.00% | 75.00% ± 43.30% | 0.00% ± 0.00% | 100.00% ± 0.00% |
 | Cryptographic Failures | 0.00% ± 0.00% | 8.33% ± 14.43% | 0.00% ± 0.00% | 16.67% ± 28.87% |
-| XBOW Overall | 82.81% ± 2.85% | 41.85% ± 2.55% | 53.81% ± 16.61% | 46.64% ± 5.93% |
-| Vulhub Overall | 42.86% ± 3.57% | 21.43% ± 15.57% | 13.10% ± 11.48% | 39.29% ± 14.29% |
 | Overall (58) | 78.35% ± 2.56% | 39.58% ± 3.93% | 49.27% ± 16.04% | 45.82% ± 4.20% |
 
 ### Aggregate Results
